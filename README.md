@@ -50,6 +50,7 @@ We provide example code for using LoftUp in [example_usage.py](example_usage.py)
 |-------------------| ---|------------------------------------------------|------|-----|
 | DINOv2 S/14     | [dinov2](featurizers/DINOv2.py)     | [haiwen/loftup-dinov2s](https://huggingface.co/haiwen/loftup-dinov2s)   | andrehuang/loftup | loftup_dinov2s|
 | DINOv2 S/14 + Reg | [dinov2s_reg](featurizers/DINOv2.py)     | [haiwen/loftup-dinov2s_reg](https://huggingface.co/haiwen/loftup-dinov2s_reg)| andrehuang/loftup | loftup_dinov2s_reg|
+| DINOv3 S+/16 | [dinov3splus](featurizers/DINOv3.py) | - | - | - |
 | DINOv2 B/14 | [dinov2b](featurizers/DINOv2.py) | [haiwen/loftup-dinov2b](https://huggingface.co/haiwen/loftup-dinov2b) | andrehuang/loftup | loftup_dinov2b|
 | DINOv2 B/14 + Reg | [dinov2b_reg](featurizers/DINOv2.py)     | [haiwen/loftup-dinov2b_reg](https://huggingface.co/haiwen/loftup-dinov2b_reg)|andrehuang/loftup | loftup_dinov2b_reg|
 | CLIP ViT B/16 | [clip](featurizers/CLIP.py) |[haiwen/loftup-clip](https://huggingface.co/haiwen/loftup-clip) | andrehuang/loftup | loftup_clip|
@@ -110,7 +111,7 @@ Stage 1 training (`train_loftup_stage1.py`) trains upsamplers to convert low-res
 
 **Example training command:**
 ```bash
-python train_loftup_stage1.py ++dataset="sa1b" ++epochs=1 ++batch_size=2 ++num_gpus=4 ++model_type="dinov2" ++pytorch_data_dir='datasets' ++upsampler_type="loftup" ++sam_mask_alpha=0.8 ++load_size=224 ++upsample_size=224 ++tv_weight=0.001 ++clamp_featup=True
+python train_loftup_stage1.py ++dataset="sa1b" ++epochs=1 ++batch_size=2 ++num_gpus=4 ++model_type="dinov3splus" ++pytorch_data_dir='datasets' ++upsampler_type="loftup" ++sam_mask_alpha=0.8 ++load_size=224 ++upsample_size=224 ++tv_weight=0.001 ++clamp_featup=True
 ```
 
 ### Stage 2: High-Resolution Supervision
@@ -119,7 +120,7 @@ Stage 2 training (`train_loftup_stage2.py`) fine-tunes the Stage 1 upsampler wit
 
 **Example training command:**
 ```bash
-python train_loftup_stage2.py ++dataset="sa1b" ++epochs=1 ++hr_res=896 ++batch_size=2 ++consistency_method="bilinear" ++model_type="dinov2" ++num_gpus=4 ++affinity_loss=True ++pytorch_data_dir='datasets' ++pretrained_upsampler="path/to/stage1_checkpoint.ckpt" ++upsampler_type="loftup" ++sam_mask_hr_alpha=0.5 ++sam_mask_reg=0.0 ++lr=1e-3 ++use_featup=False ++aug_size ++n_jitters=2
+python train_loftup_stage2.py ++dataset="sa1b" ++epochs=1 ++hr_res=896 ++batch_size=2 ++consistency_method="bilinear" ++model_type="dinov3splus" ++num_gpus=4 ++affinity_loss=True ++pytorch_data_dir='datasets' ++pretrained_upsampler="path/to/stage1_checkpoint.ckpt" ++upsampler_type="loftup" ++sam_mask_hr_alpha=0.5 ++sam_mask_reg=0.0 ++lr=1e-3 ++use_featup=False ++aug_size ++n_jitters=2
 ```
 
 ### Configuration
@@ -129,7 +130,7 @@ Both training scripts use Hydra for configuration management. Configuration file
 - `configs/train_loftup_stage2.yaml` - Stage 2 configuration
 
 **Key configuration parameters:**
-- `model_type`: Feature extractor type (e.g., "dinov2", "clip")
+- `model_type`: Feature extractor type (e.g., "dinov2", "dinov3splus", "clip")
 - `upsampler_type`: Type of upsampler to train (e.g., "loftup")
 - `batch_size`: Training batch size
 - `epochs`: Number of training epochs
