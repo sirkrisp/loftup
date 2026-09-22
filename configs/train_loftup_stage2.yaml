@@ -5,6 +5,12 @@ pytorch_data_dir: 'datasets'
 # Dataset args
 dataset: "sa1b"
 
+# SA-1B: cap the combined pool before the deterministic train/val split.
+# Set sample size to null to use all available image/JSON pairs.
+sa1b_sample_size: 1000000
+sa1b_val_fraction: 0.05
+sa1b_split_seed: 42
+
 # Model Args
 model_type: "dinov2"
 activation_type: "token"
@@ -61,6 +67,24 @@ multi_upsample_size: false
 clamp_featup: false
 aug_size: true
 downsampler_type: "attention"
+
+# Experiment tracking (TensorBoard remains enabled).
+wandb:
+  enabled: false
+  project: loftup
+  entity: null
+  name: null
+  group: null
+  mode: online
+
+# Fixed input images; falls back to validation examples if the folder is empty.
+vis:
+  enabled: true
+  image_dir: vis/images
+  max_images: 4
+  every_n_steps: 500
+  input_size: 224
+  output_size: ${upsample_size}
 
 # No need to change
 hydra:

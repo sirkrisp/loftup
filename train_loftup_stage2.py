@@ -21,7 +21,7 @@ import torchvision.transforms.functional as TF
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
-from pytorch_lightning.loggers import TensorBoardLogger
+from vis import create_logging
 from pytorch_lightning.strategies import DDPStrategy
 from torch.utils.data import DataLoader
 from torchvision.transforms import InterpolationMode
@@ -36,6 +36,7 @@ from utils import (
     mask_feature_similarity_loss,
 )
 from training_utils import (
+    validation_reconstruction_loss,
     ScaleNet,
     AttentionDownsampler,
     TVLoss,
@@ -241,7 +242,6 @@ class LoftUpStage2(pl.LightningModule):
             original_img, input_img_size, mode="bilinear"
         )  # 224x224 global image
         if binary_masks is not None:
-            binary_masks = binary_masks.unsqueeze(1)
             binary_masks = F.interpolate(binary_masks, input_img_size, mode="nearest")
 
         # Extract features from global image
@@ -287,7 +287,7 @@ class LoftUpStage2(pl.LightningModule):
                         cropped_feats = self.crop_upsampler(cropped_feats, cropped_img)
 
                         # Ensure cropped features match image size
-                        if cropped_feats.shape[2] != cropped_img.shape[2]:
+                        if cropped_feats.shape[-2:] != cropped_img.shape[-2:]:
                             cropped_feats = F.interpolate(
                                 cropped_feats, cropped_img.shape[2:], mode="bilinear"
                             )
@@ -362,7 +362,7 @@ class LoftUpStage2(pl.LightningModule):
                 full_hr_loss += hr_loss / self.n_jitters
 
                 # Ensure HR features match image size
-                if hr_feats.shape[2] != img.shape[2]:
+                if hr_feats.shape[-2:] != img.shape[-2:]:
                     hr_feats = F.interpolate(hr_feats, img.shape[2:], mode="bilinear")
             else:
                 hr_loss = 0
@@ -461,6 +461,15 @@ class LoftUpStage2(pl.LightningModule):
 
         opt.step()
         return None
+
+    def validation_step(self, batch, batch_idx):
+        img = batch["img"] if isinstance(batch, dict) else batch[0]
+        loss = validation_reconstruction_loss(self.model, self.upsampler, img, self.upsample_size)
+        self.log(
+            "val/reconstruction_mse", loss, on_step=False, on_epoch=True,
+            batch_size=img.shape[0], sync_dist=True,
+        )
+        return loss
 
     def configure_optimizers(self):
         """Configure optimizers."""
@@ -596,6 +605,13 @@ def my_app(cfg: DictConfig) -> None:
         ]
     )
 
+    # Use identical split settings in both stages to prevent validation leakage.
+    split_kwargs = dict(
+        sample_size=cfg.sa1b_sample_size,
+        val_fraction=cfg.sa1b_val_fraction,
+        split_seed=cfg.sa1b_split_seed,
+    ) if cfg.dataset == "sa1b" else {}
+
     # Setup dataset and dataloader
     dataset = get_dataset(
         cfg.pytorch_data_dir,
@@ -604,15 +620,14 @@ def my_app(cfg: DictConfig) -> None:
         transform=transform,
         target_transform=target_transform,
         include_labels=False,
+        **split_kwargs,
     )
 
     loader = DataLoader(
         dataset, cfg.batch_size, shuffle=True, num_workers=cfg.num_workers
     )
 
-    # Simple validation dataset (single image)
-    from datasets.util import SingleImageDataset
-
+    # Evaluate the held-out split, keeping every validation sample.
     val_dataset = get_dataset(
         cfg.pytorch_data_dir,
         cfg.dataset,
@@ -620,28 +635,29 @@ def my_app(cfg: DictConfig) -> None:
         transform=transform,
         target_transform=target_transform,
         include_labels=False,
+        **split_kwargs,
     )
     val_loader = DataLoader(
-        SingleImageDataset(0, val_dataset, 1),
+        val_dataset,
         1,
         shuffle=False,
         num_workers=cfg.num_workers,
     )
 
     # Setup logging and callbacks
-    tb_logger = TensorBoardLogger(log_dir, default_hp_metric=False)
-    callbacks = [ModelCheckpoint(chkpt_dir[:-5], every_n_epochs=1)]
+    loggers, callbacks = create_logging(cfg, log_dir, name, "stage2")
+    callbacks.append(ModelCheckpoint(chkpt_dir[:-5], every_n_epochs=1))
 
     # Create trainer
     trainer = Trainer(
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         strategy=(
-            DDPStrategy(find_unused_parameters=False) if cfg.num_gpus > 1 else None
+            DDPStrategy(find_unused_parameters=False) if cfg.num_gpus > 1 else "auto"
         ),
         devices=cfg.num_gpus if torch.cuda.is_available() else 1,
         max_epochs=cfg.epochs,
-        logger=tb_logger,
-        val_check_interval=100 if "debug" not in cfg.dataset else 10,
+        logger=loggers,
+        val_check_interval=1.0,
         log_every_n_steps=10,
         callbacks=callbacks,
         reload_dataloaders_every_n_epochs=1,

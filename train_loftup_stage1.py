@@ -21,7 +21,7 @@ import torchvision.transforms.functional as TF
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
-from pytorch_lightning.loggers import TensorBoardLogger
+from vis import create_logging
 from pytorch_lightning.strategies import DDPStrategy
 from torch.utils.data import DataLoader
 from torchvision.transforms import InterpolationMode
@@ -30,12 +30,11 @@ from upsamplers import get_upsampler, load_upsampler_weights, norm, unnorm
 from datasets import get_dataset
 from featurizers import get_featurizer
 from utils import (
-    pca,
-    prep_image,
     adjust_features_with_masks,
     mask_feature_similarity_loss,
 )
 from training_utils import (
+    validation_reconstruction_loss,
     ScaleNet,
     AttentionDownsampler,
     TVLoss,
@@ -134,6 +133,10 @@ class LoftUpStage1(pl.LightningModule):
         # Initialize loss functions
         self.tv = TVLoss()
 
+        self.accumulation_steps = int(cfg.get("accumulation_steps", 1)) if cfg is not None else 1
+        if self.accumulation_steps < 1:
+            raise ValueError("accumulation_steps must be positive")
+        self.weight_decay = float(cfg.get("weight_decay", 0.01)) if cfg is not None else 0.01
         self.automatic_optimization = False
 
     def forward(self, x):
@@ -157,7 +160,12 @@ class LoftUpStage1(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         opt = self.optimizers()
-        opt.zero_grad()
+        # Normalize the last, possibly shorter accumulation window correctly.
+        window_start = (batch_idx // self.accumulation_steps) * self.accumulation_steps
+        window_size = min(self.accumulation_steps, int(self.trainer.num_training_batches) - window_start)
+        if batch_idx == window_start:
+            opt.zero_grad()
+        update_now = batch_idx + 1 == window_start + window_size
 
         with torch.no_grad():
             if isinstance(batch, dict):
@@ -208,7 +216,6 @@ class LoftUpStage1(pl.LightningModule):
             guidance_img, size=(input_img_size, input_img_size), mode="bilinear"
         )
         if binary_masks is not None:
-            binary_masks = binary_masks.unsqueeze(1)
             binary_masks = F.interpolate(
                 binary_masks, size=(input_img_size, input_img_size), mode="nearest"
             )
@@ -228,7 +235,7 @@ class LoftUpStage1(pl.LightningModule):
             hr_feats = self.upsampler(final_lr_feats, guidance_img)
 
             # Ensure HR features match image size
-            if hr_feats.shape[2] != img.shape[2]:
+            if hr_feats.shape[-2:] != img.shape[-2:]:
                 hr_feats = F.interpolate(hr_feats, img.shape[2:], mode="bilinear")
 
             # Apply jittering
@@ -254,7 +261,7 @@ class LoftUpStage1(pl.LightningModule):
                 jit_img = apply_jitter(guidance_img, self.max_pad, transform_params)
 
                 # Ensure jittered image has correct size
-                if jit_img.shape[2] != guidance_img.shape[2]:
+                if jit_img.shape[-2:] != guidance_img.shape[-2:]:
                     jit_img = F.interpolate(
                         jit_img, guidance_img.shape[2:], mode="bilinear"
                     )
@@ -266,7 +273,7 @@ class LoftUpStage1(pl.LightningModule):
 
             # Apply jittering to HR features
             hr_jit_feats = apply_jitter(hr_feats, self.max_pad, transform_params)
-            if hr_jit_feats.shape[2] != guidance_img.shape[2]:
+            if hr_jit_feats.shape[-2:] != guidance_img.shape[-2:]:
                 hr_jit_feats = F.interpolate(
                     hr_jit_feats, guidance_img.shape[2:], mode="bilinear"
                 )
@@ -359,7 +366,7 @@ class LoftUpStage1(pl.LightningModule):
             self.log("loss/sam_mask_reg", sam_mask_loss.item())
 
         # Manual backward pass
-        self.manual_backward(full_total_loss)
+        self.manual_backward(full_total_loss / window_size)
 
         # Logging
         full_total_loss = full_total_loss.item()
@@ -368,162 +375,35 @@ class LoftUpStage1(pl.LightningModule):
         self.log("loss/rec", full_rec_loss)
         self.log("loss/total", full_total_loss)
 
-        if self.global_step % 100 == 0:
+        if update_now and self.global_step % 100 == 0:
             print(
                 f"Step {self.global_step}: Total loss: {full_total_loss}, Rec loss: {full_rec_loss}"
             )
 
-        if self.global_step % 5000 == 0:
+        if update_now and self.global_step > 0 and self.global_step % 5000 == 0:
             self.trainer.save_checkpoint(
                 self.chkpt_dir[:-5] + f"_{self.global_step}.ckpt"
             )
 
         # Gradient clipping for early steps
-        if self.global_step < 10:
+        if update_now and self.global_step < 10:
             self.clip_gradients(
                 opt, gradient_clip_val=0.0001, gradient_clip_algorithm="norm"
             )
 
-        opt.step()
+        if update_now:
+            opt.step()
         return None
 
     def validation_step(self, batch, batch_idx):
-        """Validation step with visualization."""
-        with torch.no_grad():
-            if self.trainer.is_global_zero and batch_idx == 0:
-                if isinstance(batch, dict):
-                    img = batch["img"]
-                    binary_masks = batch["label"]
-                    binary_masks = binary_masks.unsqueeze(1)
-                    guidance_img = F.interpolate(
-                        img,
-                        size=(self.upsample_size, self.upsample_size),
-                        mode="bilinear",
-                    )
-                    binary_masks = F.interpolate(
-                        binary_masks,
-                        size=(self.upsample_size, self.upsample_size),
-                        mode="nearest",
-                    )
-                else:
-                    img, _ = batch
-                    guidance_img = img
-
-                # Extract features
-                lr_feats = self.model(img)
-                final_lr_feats = lr_feats
-
-                # Upsample features
-                hr_feats = self.upsampler(final_lr_feats, guidance_img)
-
-                # Ensure HR features match image size
-                if hr_feats.shape[2] != img.shape[2]:
-                    hr_feats = F.interpolate(hr_feats, img.shape[2:], mode="bilinear")
-
-                # Apply jittering for validation
-                if self.zoom_only:
-                    transform_params = sample_transform(
-                        False, 0, self.max_zoom, img.shape[2], img.shape[3]
-                    )
-                else:
-                    transform_params = sample_transform(
-                        True,
-                        self.max_pad,
-                        self.max_zoom,
-                        img.shape[2],
-                        img.shape[3],
-                        max_rotation=self.max_rotate,
-                    )
-
-                jit_img = apply_jitter(img, self.max_pad, transform_params)
-                lr_jit_feats = self.model(jit_img)
-
-                # Random projection
-                proj = create_random_projection(final_lr_feats, self.random_projection)
-
-                # Get uncertainty scales if enabled
-                if self.predicted_uncertainty:
-                    scales = self.scale_net(lr_jit_feats)
-                else:
-                    scales = torch.ones_like(lr_jit_feats[:, :1])
-
-                # Visualization
-                writer = self.logger.experiment
-
-                hr_jit_feats = apply_jitter(hr_feats, self.max_pad, transform_params)
-                if (
-                    hr_jit_feats.shape[2] != guidance_img.shape[2]
-                    or hr_jit_feats.shape[3] != guidance_img.shape[3]
-                ):
-                    hr_jit_feats = F.interpolate(
-                        hr_jit_feats, guidance_img.shape[2:], mode="bilinear"
-                    )
-
-                down_jit_feats = self.downsampler(hr_jit_feats, jit_img)
-
-                # PCA visualization
-                lr_feat = final_lr_feats
-
-                [red_lr_feats], fit_pca = pca([lr_feat[0].unsqueeze(0)])
-                [red_hr_feats], _ = pca([hr_feats[0].unsqueeze(0)], fit_pca=fit_pca)
-                [red_lr_jit_feats], _ = pca(
-                    [lr_jit_feats[0].unsqueeze(0)], fit_pca=fit_pca
-                )
-                [red_hr_jit_feats], _ = pca(
-                    [hr_jit_feats[0].unsqueeze(0)], fit_pca=fit_pca
-                )
-                [red_down_jit_feats], _ = pca(
-                    [down_jit_feats[0].unsqueeze(0)], fit_pca=fit_pca
-                )
-
-                # Log images to tensorboard
-                writer.add_image(
-                    "viz/image", unnorm(img[0].unsqueeze(0))[0], self.global_step
-                )
-                writer.add_image("viz/lr_feats", red_lr_feats[0], self.global_step)
-                writer.add_image("viz/hr_feats", red_hr_feats[0], self.global_step)
-                writer.add_image(
-                    "jit_viz/jit_image",
-                    unnorm(jit_img[0].unsqueeze(0))[0],
-                    self.global_step,
-                )
-                writer.add_image(
-                    "jit_viz/lr_jit_feats", red_lr_jit_feats[0], self.global_step
-                )
-                writer.add_image(
-                    "jit_viz/hr_jit_feats", red_hr_jit_feats[0], self.global_step
-                )
-                writer.add_image(
-                    "jit_viz/down_jit_feats", red_down_jit_feats[0], self.global_step
-                )
-
-                # Log scales
-                norm_scales = scales[0]
-                norm_scales /= scales.max()
-                writer.add_image("scales", norm_scales, self.global_step)
-                writer.add_histogram("scales hist", scales, self.global_step)
-
-                # Log downsampler information
-                if isinstance(self.downsampler, AttentionDownsampler):
-                    writer.add_image(
-                        "down/att",
-                        prep_image(
-                            self.downsampler.forward_attention(hr_feats, None)[0]
-                        ),
-                        self.global_step,
-                    )
-                    writer.add_image(
-                        "down/w",
-                        prep_image(self.downsampler.w.clone().squeeze()),
-                        self.global_step,
-                    )
-                    writer.add_image(
-                        "down/b",
-                        prep_image(self.downsampler.b.clone().squeeze()),
-                        self.global_step,
-                    )
-
-                writer.flush()
+        """Evaluate held-out reconstruction; the callback handles visualizations."""
+        img = batch["img"] if isinstance(batch, dict) else batch[0]
+        loss = validation_reconstruction_loss(self.model, self.upsampler, img, self.upsample_size)
+        self.log(
+            "val/reconstruction_mse", loss, on_step=False, on_epoch=True,
+            batch_size=img.shape[0], sync_dist=True,
+        )
+        return loss
 
     def configure_optimizers(self):
         """Configure optimizers for trainable parameters."""
@@ -531,13 +411,16 @@ class LoftUpStage1(pl.LightningModule):
         for name, param in self.named_parameters():
             if param.requires_grad:
                 all_params.append(param)
-        return torch.optim.NAdam(all_params, lr=self.lr)
+        return torch.optim.AdamW(all_params, lr=self.lr, weight_decay=self.weight_decay)
 
 
-@hydra.main(config_path="configs", config_name="train_loftup_stage1.yaml")
+@hydra.main(version_base="1.1", config_path="configs", config_name="train_loftup_stage1.yaml")
 def my_app(cfg: DictConfig) -> None:
     """Main training function."""
-    print(OmegaConf.to_yaml(cfg))
+    if cfg.batch_size < 1 or cfg.num_gpus < 1 or cfg.accumulation_steps < 1:
+        raise ValueError("batch_size, num_gpus, and accumulation_steps must be positive")
+    print(OmegaConf.to_yaml(cfg, resolve=True))
+    print(f"Effective global batch: {cfg.batch_size * cfg.num_gpus * cfg.accumulation_steps}")
     print(cfg.output_root)
     seed_everything(seed=0, workers=True)
 
@@ -609,6 +492,13 @@ def my_app(cfg: DictConfig) -> None:
         ]
     )
 
+    # Use identical split settings in both stages to prevent validation leakage.
+    split_kwargs = dict(
+        sample_size=cfg.sa1b_sample_size,
+        val_fraction=cfg.sa1b_val_fraction,
+        split_seed=cfg.sa1b_split_seed,
+    ) if cfg.dataset == "sa1b" else {}
+
     # Setup dataset and dataloader
     dataset = get_dataset(
         cfg.pytorch_data_dir,
@@ -617,13 +507,14 @@ def my_app(cfg: DictConfig) -> None:
         transform=transform,
         target_transform=target_transform,
         include_labels=False,
+        **split_kwargs,
     )
 
     loader = DataLoader(
-        dataset, cfg.batch_size, shuffle=True, num_workers=cfg.num_workers
+        dataset, cfg.batch_size, shuffle=True, num_workers=cfg.num_workers, drop_last=True
     )
 
-    # Simple validation dataset (single image)
+    # Evaluate the held-out split, keeping every validation sample.
     val_dataset = get_dataset(
         cfg.pytorch_data_dir,
         cfg.dataset,
@@ -631,21 +522,28 @@ def my_app(cfg: DictConfig) -> None:
         transform=transform,
         target_transform=target_transform,
         include_labels=False,
+        **split_kwargs,
     )
-    val_loader = DataLoader(val_dataset, 1, shuffle=False, num_workers=cfg.num_workers)
+    val_loader = DataLoader(
+        val_dataset,
+        1,
+        shuffle=False,
+        num_workers=cfg.num_workers,
+    )
 
     # Setup logging and callbacks
-    tb_logger = TensorBoardLogger(log_dir, default_hp_metric=False)
-    callbacks = [ModelCheckpoint(chkpt_dir[:-5], every_n_epochs=1)]
+    loggers, callbacks = create_logging(cfg, log_dir, name, "stage1")
+    callbacks.append(ModelCheckpoint(chkpt_dir[:-5], every_n_epochs=1))
 
     # Setup trainer
     trainer = Trainer(
         accelerator="gpu",
-        strategy=DDPStrategy(find_unused_parameters=True),
+        strategy=DDPStrategy(find_unused_parameters=True) if cfg.num_gpus > 1 else "auto",
         devices=cfg.num_gpus,
+        precision=cfg.precision,
         max_epochs=cfg.epochs,
-        logger=tb_logger,
-        val_check_interval=500 if "debug" not in cfg.dataset else 10,
+        logger=loggers,
+        val_check_interval=1.0,
         log_every_n_steps=10,
         callbacks=callbacks,
         reload_dataloaders_every_n_epochs=1,

@@ -12,6 +12,20 @@ import torchvision.transforms.functional as TF
 
 from ema import EMA
 
+def validation_reconstruction_loss(featurizer, upsampler, img, upsample_size):
+    """Measure held-out feature reconstruction at the backbone's native grid."""
+    low_res_img = F.interpolate(img, size=(224, 224), mode="bilinear", align_corners=False)
+    features = featurizer(low_res_img)
+    guidance = F.interpolate(
+        img, size=(upsample_size, upsample_size), mode="bilinear", align_corners=False
+    )
+    prediction = upsampler(features, guidance)
+    reconstructed = F.interpolate(
+        prediction, size=features.shape[-2:], mode="bilinear", align_corners=False
+    )
+    return F.mse_loss(reconstructed, features)
+
+
 class ScaleNet(torch.nn.Module):
     """Network for predicting uncertainty scales."""
     
@@ -57,13 +71,17 @@ class AttentionDownsampler(torch.nn.Module):
         else:
             inputs = hr_feats
         
-        final_size = h // self.kernel_size
-        stride = (h - self.kernel_size) // (final_size - 1)
-
-        patches = torch.nn.Unfold(self.kernel_size, stride=stride)(inputs) \
-            .reshape(
-            (b, self.in_dim, self.kernel_size * self.kernel_size, final_size, final_size * int(w / h))) \
-            .permute(0, 3, 4, 2, 1)
+        if min(h, w) < self.kernel_size:
+            raise ValueError("Feature map dimensions must be at least the downsampling kernel size")
+        # Match the backbone patch grid independently along each axis. Jitter
+        # can produce rectangular maps, including widths smaller than heights.
+        out_h, out_w = h // self.kernel_size, w // self.kernel_size
+        stride_h = (h - self.kernel_size) // (out_h - 1) if out_h > 1 else self.kernel_size
+        stride_w = (w - self.kernel_size) // (out_w - 1) if out_w > 1 else self.kernel_size
+        patches = F.unfold(inputs, self.kernel_size, stride=(stride_h, stride_w))
+        patches = patches.reshape(
+            b, c, self.kernel_size * self.kernel_size, out_h, out_w
+        ).permute(0, 3, 4, 2, 1)
 
         patch_logits = self.attention_net(patches).squeeze(-1)
 
@@ -246,4 +264,4 @@ def get_kernel_size(model_type):
     if "dinov2" in model_type.lower():
         return 14
     else:
-        return 16 
+        return 16

@@ -1,12 +1,23 @@
+# Stage 1: released learning rate per author clarification in GitHub issue #25.
+defaults:
+  - gpu: 1x3090
+  - _self_
+
 # Environment Args
 output_root: 'output_dir'
 pytorch_data_dir: 'datasets'
 
 # Dataset args
-dataset: "cocostuff"
+dataset: "sa1b"
+
+# SA-1B: cap the combined pool before the deterministic train/val split.
+# Set sample size to null to use all available image/JSON pairs.
+sa1b_sample_size: 1000000
+sa1b_val_fraction: 0.05
+sa1b_split_seed: 42
 
 # Model Args
-model_type: "dinov2"
+model_type: "dinov3splus"
 activation_type: "token"
 
 # Upsampling args
@@ -15,13 +26,16 @@ upsampler_num_layers: 2
 color_feats: true
 
 # Training args
-batch_size: 8
-epochs: 100
+batch_size: ${gpu.batch_size}
+accumulation_steps: ${gpu.accumulation_steps}
+precision: 32-true
+weight_decay: 0.01
+epochs: 1
 num_workers: 4
 lr: 1e-4
 load_size: 224
 upsample_size: 224
-num_gpus: 1
+num_gpus: ${gpu.devices}
 
 # Jittering args
 n_jitters: 4
@@ -30,7 +44,7 @@ max_zoom: 0.1
 max_rotate: 5
 
 # Loss weights
-tv_weight: 0.01
+tv_weight: 0.001
 filter_ent_weight: 0.0
 sam_mask_reg: 0.0
 
@@ -43,6 +57,24 @@ clamp_featup: true
 aug_size: false
 downsampler_type: "attention"
 sam_mask_alpha: 0.8
+
+# Experiment tracking (TensorBoard remains enabled).
+wandb:
+  enabled: false
+  project: loftup
+  entity: null
+  name: null
+  group: null
+  mode: online
+
+# Fixed input images; falls back to validation examples if the folder is empty.
+vis:
+  enabled: true
+  image_dir: vis/images
+  max_images: 4
+  every_n_steps: 500
+  input_size: 224
+  output_size: ${upsample_size}
 
 # No need to change
 hydra:

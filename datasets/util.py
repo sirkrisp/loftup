@@ -34,7 +34,8 @@ class SingleImageDataset(Dataset):
         return self.ds[self.i]
 
 
-def get_dataset(dataroot, name, split, transform, target_transform, include_labels, sample_size=100000):
+def get_dataset(dataroot, name, split, transform, target_transform, include_labels, sample_size=100000,
+                val_fraction=0.05, split_seed=42):
     if name == 'cocostuff':
         return Coco(dataroot, split, transform, target_transform, include_labels=include_labels)
     elif name == 'cityscapes':
@@ -46,6 +47,8 @@ def get_dataset(dataroot, name, split, transform, target_transform, include_labe
             transform=transform,
             target_transform=target_transform,
             sample_size=sample_size,
+            val_fraction=val_fraction,
+            split_seed=split_seed,
         )
     else:
         raise ValueError(f"Unknown dataset {name}")

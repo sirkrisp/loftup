@@ -1,5 +1,5 @@
 import random
-from os.path import join
+from os.path import join, isfile, splitext
 
 import numpy as np
 import torch
@@ -42,7 +42,9 @@ class SA1B(Dataset):
                  transform,
                  target_transform,
                  max_mask=150,
-                 sample_size=100000):
+                 sample_size=100000,
+                 val_fraction=0.05,
+                 split_seed=42):
         super(SA1B, self).__init__()
         self.split = split
         self.root = join(root, "sa1b")
@@ -50,18 +52,26 @@ class SA1B(Dataset):
         self.label_transform = target_transform
         self.max_mask = max_mask
 
-        assert self.split in ["train"]
+        if split not in {"train", "val"}:
+            raise ValueError(f"Unknown SA-1B split: {split}")
+        if not 0 < val_fraction < 1:
+            raise ValueError("val_fraction must be between 0 and 1")
+        if sample_size is not None and sample_size < 2:
+            raise ValueError("sample_size must be at least 2, or None for all images")
 
-
-        self.image_files = []
-        self.label_files = []
-        for img in glob.glob(join(self.root, "*.jpg")):
-            self.image_files.append(img)
-            label = img.replace('jpg', 'json')
-            self.label_files.append(label)
-        
-        self.image_files = self.image_files[:sample_size]
-        self.label_files = self.label_files[:sample_size]
+        # Sort before shuffling so filesystem enumeration and worker RNG cannot
+        # change membership. Only use complete image/annotation pairs.
+        image_files = sorted(
+            img for img in glob.glob(join(self.root, "*.jpg"))
+            if isfile(splitext(img)[0] + ".json")
+        )
+        random.Random(split_seed).shuffle(image_files)
+        image_files = image_files[:sample_size]
+        if len(image_files) < 2:
+            raise ValueError(f"SA-1B needs at least two image/JSON pairs in {self.root}")
+        val_count = min(len(image_files) - 1, max(1, int(len(image_files) * val_fraction)))
+        self.image_files = image_files[:val_count] if split == "val" else image_files[val_count:]
+        self.label_files = [splitext(img)[0] + ".json" for img in self.image_files]
 
     def __len__(self):
         return len(self.image_files)
@@ -80,7 +90,7 @@ class SA1B(Dataset):
 
         if self.label_transform is not None:
             transformed_masks = torch.stack([
-                self.label_transform(mask) for mask in binary_masks
+                self.label_transform(Image.fromarray(mask)) for mask in binary_masks
                 # if torch.any(self.label_transform(mask) > 0)  # Keep masks with non-zero values
             ])
             ## For collation, we need to pad the masks to the same size
