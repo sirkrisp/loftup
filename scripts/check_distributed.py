@@ -46,7 +46,8 @@ def main():
         torch.cuda.synchronize()
         assert probe.sum().item() == 32
         report(f"CUDA operation passed: {torch.cuda.get_device_name(local_rank)}; "
-               f"NCCL={torch.cuda.nccl.version()}")
+               f"NCCL build version={torch.cuda.nccl.version()} "
+               "(NCCL_DEBUG=INFO reports the loaded runtime version)")
 
     report("Entering init_process_group")
     dist.init_process_group(args.backend, timeout=timedelta(seconds=60))

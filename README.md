@@ -36,6 +36,9 @@ The PyTorch stack is pinned to 2.7.1 with CUDA 12.8 wheels on Linux and Windows,
 following [uv's PyTorch integration](https://docs.astral.sh/uv/guides/integration/pytorch/).
 An NVIDIA driver is required for GPU execution. On macOS, PyTorch comes from PyPI.
 The `uv.lock` file records exact dependency versions for reproducible installs.
+On Linux, NCCL is overridden to 2.26.5 to address a reported multi-GPU RTX 5090
+illegal-memory-access failure with the 2.26.2 version pinned by PyTorch;
+see [the upstream report](https://github.com/pytorch/pytorch/issues/152780).
 Run `uv sync --locked` after updating this checkout to upgrade an existing environment.
 CUDA 12.8 wheels support RTX 50-series GPUs, including the RTX 5090 (`sm_120`);
 see the [PyTorch Blackwell release notes](https://pytorch.org/blog/pytorch-2-7/).
