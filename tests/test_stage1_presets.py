@@ -13,7 +13,7 @@ class Stage1PresetTests(unittest.TestCase):
     def test_all_gpu_and_backbone_combinations(self):
         config_dir = str(Path(__file__).resolve().parents[1] / "configs")
         with initialize_config_dir(config_dir=config_dir, version_base="1.1"):
-            for gpu in ("1x3090", "1xh100", "4x3090", "4xh100", "4x4090", "8xv100", "8x5090"):
+            for gpu in ("1x3090", "1xh100", "2x5090", "4x3090", "4xh100", "4x4090", "8xv100", "8x5090"):
                 for model in ("dinov3splus", "dinov3base"):
                     with self.subTest(gpu=gpu, model=model):
                         cfg = compose(config_name="train_loftup_stage1", overrides=[f"gpu={gpu}", f"model_type={model}"])

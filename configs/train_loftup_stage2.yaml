@@ -31,7 +31,7 @@ hf:
   retries: 3
 
 # Model Args
-model_type: "dinov2"
+model_type: "dinov3splus"
 activation_type: "token"
 
 # High-Resolution Training args

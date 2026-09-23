@@ -2,7 +2,7 @@
 LoftUp Stage 2 Training Script (High-Resolution Supervision)
 
 Example training command:
-python train_loftup_stage2.py ++dataset="sa1b_webdataset" ++epochs=1 ++hr_res=896 ++batch_size=2 ++consistency_method="bilinear" ++model_type="dinov3splus" ++num_gpus=4 ++affinity_loss=True ++pytorch_data_dir='datasets' ++pretrained_upsampler="path/to/stage1_checkpoint.ckpt" ++upsampler_type="loftup" ++sam_mask_hr_alpha=0.5 ++sam_mask_reg=0.0 ++lr=1e-3 ++use_featup=False ++aug_size=True ++n_jitters=2
+python train_loftup_stage2.py ++dataset="sa1b_webdataset" ++epochs=1 ++hr_res=896 ++batch_size=2 ++consistency_method="bilinear" ++num_gpus=4 ++affinity_loss=True ++pytorch_data_dir='datasets' ++pretrained_upsampler="path/to/stage1_checkpoint.ckpt" ++upsampler_type="loftup" ++sam_mask_hr_alpha=0.5 ++sam_mask_reg=0.0 ++lr=1e-3 ++use_featup=False ++aug_size=True ++n_jitters=2
 
 This script trains upsamplers with high-resolution supervision using a pretrained Stage 1 upsampler.
 """

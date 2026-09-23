@@ -167,22 +167,25 @@ do not control the default finite stream.
 Stage 1 training (`train_loftup_stage1.py`) trains upsamplers to convert low-resolution features to high-resolution features using reconstruction loss.
 
 Activate the uv environment (`source .venv/bin/activate`), then choose a GPU
-preset and backbone. `uv run python` also works without activation:
+preset. Both training stages default to `dinov3splus`; use `model_type` to
+select another backbone. `uv run python` also works without activation:
 
 ```bash
-python train_loftup_stage1.py gpu="1x3090" model_type="dinov3splus"
+python train_loftup_stage1.py gpu="1x3090"
 python train_loftup_stage1.py gpu="1xh100" model_type="dinov3base"
-python train_loftup_stage1.py gpu="4x3090" model_type="dinov3splus"
+python train_loftup_stage1.py gpu="2x5090"
+python train_loftup_stage1.py gpu="4x3090"
 python train_loftup_stage1.py gpu="4xh100" model_type="dinov3base"
-python train_loftup_stage1.py gpu="4x4090" model_type="dinov3splus"
-python train_loftup_stage1.py gpu="8xv100" model_type="dinov3splus"
-python train_loftup_stage1.py gpu="8x5090" model_type="dinov3splus"
+python train_loftup_stage1.py gpu="4x4090"
+python train_loftup_stage1.py gpu="8xv100"
+python train_loftup_stage1.py gpu="8x5090"
 ```
 
 | GPU preset | GPUs | Batch per GPU | Accumulation steps | Effective global batch |
 |---|---:|---:|---:|---:|
 | `1x3090` | 1 | 1 | 8 | 8 |
 | `1xh100` | 1 | 2 | 4 | 8 |
+| `2x5090` | 2 | 1 | 4 | 8 |
 | `4x3090` | 4 | 1 | 2 | 8 |
 | `4xh100` | 4 | 2 | 1 | 8 |
 | `4x4090` | 4 | 1 | 2 | 8 |
@@ -229,7 +232,7 @@ Stage 2 training (`train_loftup_stage2.py`) fine-tunes the Stage 1 upsampler wit
 
 **Example training command:**
 ```bash
-python train_loftup_stage2.py ++dataset="sa1b_webdataset" ++epochs=1 ++hr_res=896 ++batch_size=2 ++consistency_method="bilinear" ++model_type="dinov3splus" ++num_gpus=4 ++affinity_loss=True ++pytorch_data_dir='datasets' ++pretrained_upsampler="path/to/stage1_checkpoint.ckpt" ++upsampler_type="loftup" ++sam_mask_hr_alpha=0.5 ++sam_mask_reg=0.0 ++lr=1e-3 ++use_featup=False ++aug_size=True ++n_jitters=2
+python train_loftup_stage2.py ++dataset="sa1b_webdataset" ++epochs=1 ++hr_res=896 ++batch_size=2 ++consistency_method="bilinear" ++num_gpus=4 ++affinity_loss=True ++pytorch_data_dir='datasets' ++pretrained_upsampler="path/to/stage1_checkpoint.ckpt" ++upsampler_type="loftup" ++sam_mask_hr_alpha=0.5 ++sam_mask_reg=0.0 ++lr=1e-3 ++use_featup=False ++aug_size=True ++n_jitters=2
 ```
 
 ### W&B logging and feature visualization
@@ -239,8 +242,8 @@ once, then enable it for a run:
 
 ```bash
 uv run wandb login
-uv run python train_loftup_stage1.py gpu=1x3090 model_type=dinov3splus wandb.enabled=true
-uv run python train_loftup_stage2.py model_type=dinov3splus num_gpus=1 pretrained_upsampler=/path/to/stage1.ckpt wandb.enabled=true
+uv run python train_loftup_stage1.py gpu=1x3090 wandb.enabled=true
+uv run python train_loftup_stage2.py num_gpus=1 pretrained_upsampler=/path/to/stage1.ckpt wandb.enabled=true
 ```
 
 Set `wandb.project`, `wandb.entity`, `wandb.name`, or `wandb.group` to customize the
@@ -275,7 +278,7 @@ Both training scripts use Hydra for configuration management. Configuration file
 - `configs/train_loftup_stage2.yaml` - Stage 2 configuration
 
 **Key configuration parameters:**
-- `model_type`: Feature extractor type (e.g., "dinov2", "dinov3splus", "clip")
+- `model_type`: Feature extractor type (default: "dinov3splus"; alternatives include "dinov3base", "dinov2", "clip")
 - `upsampler_type`: Type of upsampler to train (e.g., "loftup")
 - `batch_size`: Training batch size
 - `epochs`: Number of training epochs
