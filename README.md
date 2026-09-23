@@ -32,10 +32,15 @@ uv sync
 
 This creates a local `.venv` using Python 3.11 and installs the dependencies for
 inference, training, and evaluation, including the bundled DAVIS evaluator.
-The PyTorch stack is pinned to 2.5.1 with CUDA 12.1 wheels on Linux and Windows,
+The PyTorch stack is pinned to 2.7.1 with CUDA 12.8 wheels on Linux and Windows,
 following [uv's PyTorch integration](https://docs.astral.sh/uv/guides/integration/pytorch/).
 An NVIDIA driver is required for GPU execution. On macOS, PyTorch comes from PyPI.
 The `uv.lock` file records exact dependency versions for reproducible installs.
+Run `uv sync --locked` after updating this checkout to upgrade an existing environment.
+CUDA 12.8 wheels support RTX 50-series GPUs, including the RTX 5090 (`sm_120`);
+see the [PyTorch Blackwell release notes](https://pytorch.org/blog/pytorch-2-7/).
+These wheels omit V100 (`sm_70`) support; the `8xv100` hardware preset requires
+a separate PyTorch build that supports Volta, such as the legacy CUDA 12.1 environment.
 
 Run scripts from the repository root using `uv run`, for example:
 
@@ -49,7 +54,8 @@ separately. The legacy YAML files also list the system `ffmpeg` executable;
 install it separately if needed for external video workflows (the Python scripts
 here use OpenCV for video output).
 
-The original Conda environments remain available:
+The original Conda environments remain available for older GPUs. Their PyTorch
+builds do not support RTX 50-series GPUs; use the uv environment above for those:
 
 ```bash
 conda env create -f environment_cuda11.yaml
