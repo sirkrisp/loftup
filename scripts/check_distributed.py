@@ -18,6 +18,8 @@ import torch.distributed as dist
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=("nccl", "gloo"), default="nccl")
+    parser.add_argument("--ddp", action="store_true",
+                        help="Also test a 32 MiB collective and DDP startup/backward")
     args = parser.parse_args()
     rank = int(os.environ["RANK"])
     local_rank = int(os.environ["LOCAL_RANK"])
@@ -55,7 +57,38 @@ def main():
     expected = world * (world + 1) / 2
     if actual != expected:
         raise RuntimeError(f"all_reduce returned {actual}, expected {expected}")
-    report(f"all_reduce passed: {actual}; destroying process group")
+    report(f"all_reduce passed: {actual}")
+    if args.ddp:
+        report("Entering 32 MiB all_reduce")
+        large = torch.full((8 * 1024 * 1024,), float(rank + 1), device=device)
+        dist.all_reduce(large)
+        if not torch.all(large == expected).item():
+            raise RuntimeError("Large all_reduce returned incorrect values")
+        del large
+        report("32 MiB all_reduce passed; creating model")
+        torch.manual_seed(rank)
+        model = torch.nn.Sequential(
+            torch.nn.Linear(2048, 2048), torch.nn.ReLU(),
+            torch.nn.Linear(2048, 2048),
+        ).to(device)
+        # Exercise a frozen backbone plus trainable parameters, as in LoftUp.
+        model[0].requires_grad_(False)
+        report("Entering DDP constructor (parameter synchronization)")
+        model = torch.nn.parallel.DistributedDataParallel(
+            model, device_ids=[local_rank] if args.backend == "nccl" else None,
+            find_unused_parameters=True,
+        )
+        report("DDP constructor passed; entering forward/backward")
+        model(torch.randn(2, 2048, device=device)).square().mean().backward()
+        for parameter in model.parameters():
+            if parameter.requires_grad:
+                if parameter.grad is None or not torch.isfinite(parameter.grad).all().item():
+                    raise RuntimeError("Missing or nonfinite DDP gradient")
+        if args.backend == "nccl":
+            torch.cuda.synchronize()
+        report("DDP forward/backward passed")
+        del model
+    report("Destroying process group")
     dist.destroy_process_group()
     faulthandler.cancel_dump_traceback_later()
     report("PASS")
