@@ -42,7 +42,7 @@ class SA1B(Dataset):
                  transform,
                  target_transform,
                  max_mask=150,
-                 sample_size=100000,
+                 sample_size=1000000,
                  val_fraction=0.05,
                  split_seed=42):
         super(SA1B, self).__init__()

@@ -3,13 +3,32 @@ output_root: 'output_dir'
 pytorch_data_dir: 'datasets'
 
 # Dataset args
-dataset: "sa1b"
+dataset: "sa1b_webdataset"
 
 # SA-1B: cap the combined pool before the deterministic train/val split.
 # Set sample size to null to use all available image/JSON pairs.
 sa1b_sample_size: 1000000
 sa1b_val_fraction: 0.05
 sa1b_split_seed: 42
+
+# The preparation run produced fixed-size shards of 1,000 samples each.
+# Exactly 1M training images globally, independent of GPU/worker count.
+webdataset:
+  shards: ${oc.env:SA1B_WEBDATASET_SHARDS,'s3://sa1b-webdataset/sa1b-896/'}
+  endpoint: ${oc.env:B2_ENDPOINT_URL,'https://s3.eu-central-003.backblazeb2.com'}
+  samples_per_shard: 1000
+  train_samples: 1000000
+  val_samples: 5000 # Separate images after the training pool.
+  train_batches: 1000 # Only used if train_samples=null (legacy cycling mode).
+  val_batches: 100
+  max_masks: 150
+  shuffle_buffer: 32
+  prefetch_factor: 1 # Bounds memory occupied by decoded SAM masks.
+
+hf:
+  enabled: true
+  repo_id: Krispin/loftup
+  retries: 3
 
 # Model Args
 model_type: "dinov2"
@@ -28,7 +47,7 @@ use_featup: false
 # Training args
 batch_size: 2
 epochs: 1
-num_workers: 4
+num_workers: 8
 lr: 1e-3
 load_size: 224
 upsample_size: 224

@@ -2,7 +2,7 @@
 LoftUp Stage 1 Training Script
 
 Example training command:
-python train_loftup_stage1.py ++dataset="sa1b" ++epochs=1 ++batch_size=2 ++num_gpus=4 ++model_type="dinov3splus" ++pytorch_data_dir='datasets' ++upsampler_type="loftup" ++sam_mask_alpha=0.8 ++load_size=224 ++upsample_size=224 ++tv_weight=0.001 ++clamp_featup=True
+python train_loftup_stage1.py ++dataset="sa1b_webdataset" ++epochs=1 ++batch_size=2 ++num_gpus=4 ++model_type="dinov3splus" ++pytorch_data_dir='datasets' ++upsampler_type="loftup" ++sam_mask_alpha=0.8 ++load_size=224 ++upsample_size=224 ++tv_weight=0.001 ++clamp_featup=True
 
 This script trains upsamplers to convert low-resolution features to high-resolution features.
 """
@@ -23,11 +23,11 @@ from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
 from vis import create_logging
 from pytorch_lightning.strategies import DDPStrategy
-from torch.utils.data import DataLoader
 from torchvision.transforms import InterpolationMode
 
 from upsamplers import get_upsampler, load_upsampler_weights, norm, unnorm
-from datasets import get_dataset
+from datasets.loaders import create_training_loaders
+from checkpoint_upload import configure_checkpoint_upload
 from featurizers import get_featurizer
 from utils import (
     adjust_features_with_masks,
@@ -136,7 +136,7 @@ class LoftUpStage1(pl.LightningModule):
         self.accumulation_steps = int(cfg.get("accumulation_steps", 1)) if cfg is not None else 1
         if self.accumulation_steps < 1:
             raise ValueError("accumulation_steps must be positive")
-        self.weight_decay = float(cfg.get("weight_decay", 0.01)) if cfg is not None else 0.01
+        self.weight_decay = float(cfg.get("weight_decay", 0.0)) if cfg is not None else 0.0
         self.automatic_optimization = False
 
     def forward(self, x):
@@ -411,7 +411,7 @@ class LoftUpStage1(pl.LightningModule):
         for name, param in self.named_parameters():
             if param.requires_grad:
                 all_params.append(param)
-        return torch.optim.AdamW(all_params, lr=self.lr, weight_decay=self.weight_decay)
+        return torch.optim.NAdam(all_params, lr=self.lr, weight_decay=self.weight_decay)
 
 
 @hydra.main(version_base="1.1", config_path="configs", config_name="train_loftup_stage1.yaml")
@@ -492,48 +492,12 @@ def my_app(cfg: DictConfig) -> None:
         ]
     )
 
-    # Use identical split settings in both stages to prevent validation leakage.
-    split_kwargs = dict(
-        sample_size=cfg.sa1b_sample_size,
-        val_fraction=cfg.sa1b_val_fraction,
-        split_seed=cfg.sa1b_split_seed,
-    ) if cfg.dataset == "sa1b" else {}
-
-    # Setup dataset and dataloader
-    dataset = get_dataset(
-        cfg.pytorch_data_dir,
-        cfg.dataset,
-        "train",
-        transform=transform,
-        target_transform=target_transform,
-        include_labels=False,
-        **split_kwargs,
-    )
-
-    loader = DataLoader(
-        dataset, cfg.batch_size, shuffle=True, num_workers=cfg.num_workers, drop_last=True
-    )
-
-    # Evaluate the held-out split, keeping every validation sample.
-    val_dataset = get_dataset(
-        cfg.pytorch_data_dir,
-        cfg.dataset,
-        "val",
-        transform=transform,
-        target_transform=target_transform,
-        include_labels=False,
-        **split_kwargs,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        1,
-        shuffle=False,
-        num_workers=cfg.num_workers,
-    )
+    loader, val_loader = create_training_loaders(cfg, transform, target_transform)
 
     # Setup logging and callbacks
     loggers, callbacks = create_logging(cfg, log_dir, name, "stage1")
     callbacks.append(ModelCheckpoint(chkpt_dir[:-5], every_n_epochs=1))
+    checkpoint_plugins = configure_checkpoint_upload(cfg, callbacks, "stage1", name)
 
     # Setup trainer
     trainer = Trainer(
@@ -546,6 +510,7 @@ def my_app(cfg: DictConfig) -> None:
         val_check_interval=1.0,
         log_every_n_steps=10,
         callbacks=callbacks,
+        plugins=checkpoint_plugins,
         reload_dataloaders_every_n_epochs=1,
     )
 

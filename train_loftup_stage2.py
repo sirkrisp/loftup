@@ -2,7 +2,7 @@
 LoftUp Stage 2 Training Script (High-Resolution Supervision)
 
 Example training command:
-python train_loftup_stage2.py ++dataset="sa1b" ++epochs=1 ++hr_res=896 ++batch_size=2 ++consistency_method="bilinear" ++model_type="dinov3splus" ++num_gpus=4 ++affinity_loss=True ++pytorch_data_dir='datasets' ++pretrained_upsampler="path/to/stage1_checkpoint.ckpt" ++upsampler_type="loftup" ++sam_mask_hr_alpha=0.5 ++sam_mask_reg=0.0 ++lr=1e-3 ++use_featup=False ++aug_size ++n_jitters=2
+python train_loftup_stage2.py ++dataset="sa1b_webdataset" ++epochs=1 ++hr_res=896 ++batch_size=2 ++consistency_method="bilinear" ++model_type="dinov3splus" ++num_gpus=4 ++affinity_loss=True ++pytorch_data_dir='datasets' ++pretrained_upsampler="path/to/stage1_checkpoint.ckpt" ++upsampler_type="loftup" ++sam_mask_hr_alpha=0.5 ++sam_mask_reg=0.0 ++lr=1e-3 ++use_featup=False ++aug_size=True ++n_jitters=2
 
 This script trains upsamplers with high-resolution supervision using a pretrained Stage 1 upsampler.
 """
@@ -23,11 +23,11 @@ from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
 from vis import create_logging
 from pytorch_lightning.strategies import DDPStrategy
-from torch.utils.data import DataLoader
 from torchvision.transforms import InterpolationMode
 
 from upsamplers import get_upsampler, load_upsampler_weights, norm, unnorm
-from datasets import get_dataset
+from datasets.loaders import create_training_loaders
+from checkpoint_upload import configure_checkpoint_upload
 from featurizers import get_featurizer
 from utils import (
     pca,
@@ -605,48 +605,12 @@ def my_app(cfg: DictConfig) -> None:
         ]
     )
 
-    # Use identical split settings in both stages to prevent validation leakage.
-    split_kwargs = dict(
-        sample_size=cfg.sa1b_sample_size,
-        val_fraction=cfg.sa1b_val_fraction,
-        split_seed=cfg.sa1b_split_seed,
-    ) if cfg.dataset == "sa1b" else {}
-
-    # Setup dataset and dataloader
-    dataset = get_dataset(
-        cfg.pytorch_data_dir,
-        cfg.dataset,
-        "train",
-        transform=transform,
-        target_transform=target_transform,
-        include_labels=False,
-        **split_kwargs,
-    )
-
-    loader = DataLoader(
-        dataset, cfg.batch_size, shuffle=True, num_workers=cfg.num_workers
-    )
-
-    # Evaluate the held-out split, keeping every validation sample.
-    val_dataset = get_dataset(
-        cfg.pytorch_data_dir,
-        cfg.dataset,
-        "val",
-        transform=transform,
-        target_transform=target_transform,
-        include_labels=False,
-        **split_kwargs,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        1,
-        shuffle=False,
-        num_workers=cfg.num_workers,
-    )
+    loader, val_loader = create_training_loaders(cfg, transform, target_transform)
 
     # Setup logging and callbacks
     loggers, callbacks = create_logging(cfg, log_dir, name, "stage2")
     callbacks.append(ModelCheckpoint(chkpt_dir[:-5], every_n_epochs=1))
+    checkpoint_plugins = configure_checkpoint_upload(cfg, callbacks, "stage2", name)
 
     # Create trainer
     trainer = Trainer(
@@ -660,6 +624,7 @@ def my_app(cfg: DictConfig) -> None:
         val_check_interval=1.0,
         log_every_n_steps=10,
         callbacks=callbacks,
+        plugins=checkpoint_plugins,
         reload_dataloaders_every_n_epochs=1,
         precision=16 if torch.cuda.is_available() else 32,
     )

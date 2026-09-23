@@ -139,18 +139,28 @@ access does not authenticate the default `dl.fbaipublicfiles.com` Torch Hub URL.
 
 This repository contains training scripts for training LoftUp upsamplers. The training is done in two stages:
 
-SA-1B images are split into disjoint training (95%) and validation (5%) sets
-using seed 42. Both training stages use the same split settings. Validation runs
-at the end of each epoch over all held-out images and logs
-`val/reconstruction_mse`: the MSE between backbone features and upsampled features
-resized back to the backbone grid. This is a reconstruction diagnostic, not a
-downstream segmentation score. Stage 1 also visualizes the first validation image.
+Both stages default to the prepared WebDataset at
+`s3://sa1b-webdataset/sa1b-896/`. Each epoch uses **1,000,000 distinct training
+images globally**, with identical membership in both stages, plus 5,000 separate
+validation images. Sorted shards and sample positions determine membership;
+keep the shard source fixed between stages. The preparation state records 1,174
+completed shards of 1,000 samples from the 105 source tars.
 
-Configure the split with `sa1b_val_fraction=0.05`, `sa1b_split_seed=42`, and
-`sa1b_sample_size=1000000`. The sample limit applies to the combined pool before
-splitting; use `sa1b_sample_size=null` to include all complete image/JSON pairs.
-Membership is reproducible for an unchanged dataset and identical settings;
-finish downloading before training and keep these settings fixed across stages.
+Each GPU uses eight streaming/download and decoding workers, with one prefetched
+batch per worker. Set `num_workers` to tune throughput and host memory use.
+Export a B2 key with list/read access (`B2_APPLICATION_ID` and
+`B2_APPLICATION_KEY`). See [streaming details](datasets/README.md#train-from-webdataset-shards).
+
+Every periodic, epoch, and final checkpoint automatically uploads to private
+`Krispin/loftup`, under a stage-specific, unique run directory. Authenticate with
+`hf auth login` or `HF_TOKEN` using a write-capable token. Uploads finish
+synchronously before training continues and retry three times; exhausted retries
+stop training with the local file retained. Repository access/privacy is checked
+before fitting; public repositories are rejected. Set `hf.enabled=false` to disable.
+
+Validation logs `val/reconstruction_mse`, a feature reconstruction diagnostic.
+The old flat-file loader remains available with `dataset=sa1b`; its split settings
+do not control the default finite stream.
 
 ### Stage 1: Basic Feature Upsampling
 
@@ -165,6 +175,8 @@ python train_loftup_stage1.py gpu="1xh100" model_type="dinov3base"
 python train_loftup_stage1.py gpu="4x3090" model_type="dinov3splus"
 python train_loftup_stage1.py gpu="4xh100" model_type="dinov3base"
 python train_loftup_stage1.py gpu="4x4090" model_type="dinov3splus"
+python train_loftup_stage1.py gpu="8xv100" model_type="dinov3splus"
+python train_loftup_stage1.py gpu="8x5090" model_type="dinov3splus"
 ```
 
 | GPU preset | GPUs | Batch per GPU | Accumulation steps | Effective global batch |
@@ -174,29 +186,34 @@ python train_loftup_stage1.py gpu="4x4090" model_type="dinov3splus"
 | `4x3090` | 4 | 1 | 2 | 8 |
 | `4xh100` | 4 | 2 | 1 | 8 |
 | `4x4090` | 4 | 1 | 2 | 8 |
+| `8xv100` | 8 | 1 | 1 | 8 |
+| `8x5090` | 8 | 1 | 1 | 8 |
 
 These are conservative execution presets, not measured optimal batch sizes.
 They select the number of visible GPUs; use `CUDA_VISIBLE_DEVICES` to choose
-specific devices. Four-GPU runs use DDP. All presets default to float32.
+specific devices. Multi-GPU runs use DDP. All presets default to float32.
 The final incomplete accumulation window is normalized by its actual number
-of microbatches; incomplete per-device batches are dropped. Accumulation does
+of microbatches; incomplete per-device batches are retained as in the release. Accumulation does
 not reproduce full-batch BatchNorm statistics.
 
 Learning rates follow the [author's clarification in issue #25](https://github.com/andrehuang/loftup/issues/25#issuecomment-5775180056):
 **Stage 1 `1e-4`, Stage 2 `1e-3`**, as in the released configs.
-Other Stage 1 defaults are AdamW, effective batch 8, one epoch,
+Other Stage 1 defaults are NAdam, effective batch 8, one epoch,
 two cross-attention blocks, and mask refinement `sam_mask_alpha=0.8`.
 The authors identify the [first 100 SA-1B tar shards](https://github.com/andrehuang/loftup/issues/23#issuecomment-3908435195)
 as the training subset. The downloader accepts `--num-tars N` to start with fewer
-shards in that same order. The dataset pool is capped at 1M image/JSON pairs; the local 5% holdout leaves
-950k training images when the full pool is available. Smaller local datasets
-use the available pairs. This holdout and the DINOv3 backbones are local
-extensions, not the paper's exact experimental protocol.
+shards in that same order. The prepared WebDataset selects a full million
+training images before allocating validation images. The extra validation set
+and DINOv3 backbones are local extensions to the released recipe.
 
 Settings not specified in that appendix retain the released training recipe:
 224-pixel input/output, four jitters, random projection dimension 64,
 `tv_weight=0.001` from the authors' example command, and reconstruction clamping.
-AdamW weight decay defaults to `0.01`; the paper does not specify it.
+Stage 1 uses the released code's NAdam optimizer with weight decay `0.0`;
+Stage 2 retains its released AdamW optimizer with weight decay `0.01`.
+The reference is the released SA-1B example command at commit `718fcdc`:
+the bare Stage 1 YAML instead defaults to COCO-Stuff, 100 epochs, and
+`tv_weight=0.01`, which the example command overrides.
 The remaining released training implementation is not claimed to reproduce all
 paper details. Stage 2's optimizer/training defaults are unchanged by these
 Stage 1 presets; only its dataset pool limit is aligned to preserve split membership.
@@ -212,7 +229,7 @@ Stage 2 training (`train_loftup_stage2.py`) fine-tunes the Stage 1 upsampler wit
 
 **Example training command:**
 ```bash
-python train_loftup_stage2.py ++dataset="sa1b" ++epochs=1 ++hr_res=896 ++batch_size=2 ++consistency_method="bilinear" ++model_type="dinov3splus" ++num_gpus=4 ++affinity_loss=True ++pytorch_data_dir='datasets' ++pretrained_upsampler="path/to/stage1_checkpoint.ckpt" ++upsampler_type="loftup" ++sam_mask_hr_alpha=0.5 ++sam_mask_reg=0.0 ++lr=1e-3 ++use_featup=False ++aug_size ++n_jitters=2
+python train_loftup_stage2.py ++dataset="sa1b_webdataset" ++epochs=1 ++hr_res=896 ++batch_size=2 ++consistency_method="bilinear" ++model_type="dinov3splus" ++num_gpus=4 ++affinity_loss=True ++pytorch_data_dir='datasets' ++pretrained_upsampler="path/to/stage1_checkpoint.ckpt" ++upsampler_type="loftup" ++sam_mask_hr_alpha=0.5 ++sam_mask_reg=0.0 ++lr=1e-3 ++use_featup=False ++aug_size=True ++n_jitters=2
 ```
 
 ### W&B logging and feature visualization

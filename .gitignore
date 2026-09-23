@@ -177,3 +177,7 @@ cython_debug/
 /datasets/sa1b
 
 /output_dir
+
+/datasets/sa1b-webdataset
+
+/datasets/sa-1b-links.txt
