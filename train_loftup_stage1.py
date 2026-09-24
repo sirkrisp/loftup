@@ -520,7 +520,7 @@ def my_app(cfg: DictConfig) -> None:
     gc.collect()
 
     # Start training
-    trainer.fit(model, loader, val_loader)
+    trainer.fit(model, loader, val_loader, ckpt_path=cfg.get("resume_from"))
     trainer.save_checkpoint(chkpt_dir)
     print(f"Saved model to {chkpt_dir}")
 

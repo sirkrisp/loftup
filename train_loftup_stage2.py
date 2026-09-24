@@ -635,7 +635,7 @@ def my_app(cfg: DictConfig) -> None:
     gc.collect()
 
     # Train
-    trainer.fit(model, loader, val_loader)
+    trainer.fit(model, loader, val_loader, ckpt_path=cfg.get("resume_from"))
     trainer.save_checkpoint(chkpt_dir)
     print(f"Saved checkpoint to {chkpt_dir}")
 
