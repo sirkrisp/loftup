@@ -75,7 +75,7 @@ class StreamingTests(unittest.TestCase):
         self.assertTrue(all(body.closed for body in bodies))
 
     def test_s3_body_retry_exhaustion_raises_without_repeating_samples(self):
-        bodies = [self.interrupted_body(25088) for _ in range(4)]
+        bodies = [self.interrupted_body(25088) for _ in range(21)]
         actual = []
         with patch('datasets.sa1b_webdataset.s3_client') as client, \
                 patch('datasets.sa1b_webdataset.time.sleep') as sleep, \
@@ -86,7 +86,9 @@ class StreamingTests(unittest.TestCase):
                     actual.append(sample['__key__'])
         self.assertTrue(actual)
         self.assertEqual(len(actual), len(set(actual)))
-        self.assertEqual(sleep.call_count, 3)
+        self.assertEqual(sleep.call_count, 20)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list],
+                         [1, 2, 4, 8, 16] + [30] * 15)
         self.assertTrue(all(body.closed for body in bodies))
 
     def test_s3_access_errors_are_not_retried(self):

@@ -112,7 +112,7 @@ def iter_encoded_samples(shard, endpoint=None):
     )
 
     yielded = 0
-    retries = 3
+    retries = 20
     for attempt in range(retries + 1):
         try:
             with closing(_iter_encoded_samples(shard, endpoint)) as samples:
@@ -127,7 +127,7 @@ def iter_encoded_samples(shard, endpoint=None):
             if attempt == retries:
                 error.add_note(f"S3 shard {shard} failed after {retries} retries; {yielded} samples yielded")
                 raise
-            delay = 2 ** attempt
+            delay = min(2 ** attempt, 30)
             logging.getLogger(__name__).warning(
                 "Interrupted S3 shard %s (%s); retry %d/%d in %ds, replaying %d samples",
                 shard, type(error).__name__, attempt + 1, retries, delay, yielded,
