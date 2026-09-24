@@ -203,7 +203,7 @@ python train_loftup_stage1.py gpu="8x5090"
 |---|---:|---:|---:|---:|
 | `1x3090` | 1 | 1 | 8 | 8 |
 | `1xh100` | 1 | 2 | 4 | 8 |
-| `2x5090` | 2 | 4 | 2 | 16 |
+| `2x5090` | 2 | 2 | 2 | 8 |
 | `4x3090` | 4 | 1 | 2 | 8 |
 | `4xh100` | 4 | 2 | 1 | 8 |
 | `4x4090` | 4 | 1 | 2 | 8 |
@@ -219,7 +219,7 @@ not reproduce full-batch BatchNorm statistics.
 
 Learning rates follow the [author's clarification in issue #25](https://github.com/andrehuang/loftup/issues/25#issuecomment-5775180056):
 **Stage 1 `1e-4`, Stage 2 `1e-3`**, as in the released configs.
-Other Stage 1 defaults are NAdam, effective batch 8 (16 for `2x5090`), one epoch,
+Other Stage 1 defaults are NAdam, effective batch 8, one epoch,
 two cross-attention blocks, and mask refinement `sam_mask_alpha=0.8`.
 The authors identify the [first 100 SA-1B tar shards](https://github.com/andrehuang/loftup/issues/23#issuecomment-3908435195)
 as the training subset. The downloader accepts `--num-tars N` to start with fewer
@@ -242,7 +242,7 @@ Stage 1 presets; only its dataset pool limit is aligned to preserve split member
 You can still override individual settings without `++`, for example
 `batch_size=1 accumulation_steps=8`, or inspect the resolved configuration with
 `--cfg job --resolve`. Effective global batch is
-`batch_size * num_gpus * accumulation_steps`: 16 for `2x5090`, 8 for other presets.
+`batch_size * num_gpus * accumulation_steps`: 8 for all presets.
 
 ### Stage 2: High-Resolution Supervision
 

@@ -17,10 +17,9 @@ class Stage1PresetTests(unittest.TestCase):
                 for model in ("dinov3splus", "dinov3base"):
                     with self.subTest(gpu=gpu, model=model):
                         cfg = compose(config_name="train_loftup_stage1", overrides=[f"gpu={gpu}", f"model_type={model}"])
-                        self.assertEqual(cfg.batch_size * cfg.num_gpus * cfg.accumulation_steps,
-                                         16 if gpu == "2x5090" else 8)
+                        self.assertEqual(cfg.batch_size * cfg.num_gpus * cfg.accumulation_steps, 8)
                         if gpu == "2x5090":
-                            self.assertEqual((cfg.batch_size, cfg.accumulation_steps), (4, 2))
+                            self.assertEqual((cfg.batch_size, cfg.accumulation_steps), (2, 2))
                         self.assertEqual(cfg.num_gpus, int(gpu[0]))
                         self.assertEqual(cfg.lr, 1e-4)
                         self.assertEqual(cfg.weight_decay, 0.0)
