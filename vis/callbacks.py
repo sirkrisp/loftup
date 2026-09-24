@@ -1,5 +1,6 @@
 """Shared experiment logging and feature previews for both training stages."""
 from pathlib import Path
+from itertools import islice
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
@@ -8,6 +9,7 @@ import torch.nn.functional as F
 from torchvision import transforms as T
 from pytorch_lightning import Callback
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
+from pytorch_lightning.utilities.seed import isolate_rng
 from omegaconf import OmegaConf
 
 from upsamplers import norm, unnorm
@@ -78,6 +80,25 @@ class FeatureVisualization(Callback):
             with Image.open(path) as image:
                 self.examples.append((path.stem, transform(ImageOps.exif_transpose(image).convert("RGB")).unsqueeze(0)))
         self._fixed_images = bool(self.examples)
+
+    def on_train_start(self, trainer, pl_module):
+        # Lightning skips sanity validation when resuming. The preview cache is
+        # process-local, so older checkpoints also need fresh validation images.
+        if not trainer.is_global_zero or self.examples:
+            return
+        loaders = trainer.val_dataloaders
+        if loaders is None:
+            return
+        if not isinstance(loaders, (list, tuple)):
+            loaders = [loaders]
+        # Match sanity validation's RNG isolation: drawing preview batches must
+        # not change training's random augmentations or dropout sequence.
+        with isolate_rng():
+            for loader in loaders:
+                for batch_idx, batch in enumerate(islice(loader, self.max_images)):
+                    self.on_validation_batch_end(trainer, pl_module, None, batch, batch_idx)
+                    if len(self.examples) >= self.max_images:
+                        return
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
         if not trainer.is_global_zero or self._fixed_images or len(self.examples) >= self.max_images:

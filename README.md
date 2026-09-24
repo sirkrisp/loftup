@@ -270,6 +270,8 @@ By default it caches up to four validation examples. Optionally put fixed images
 in `vis/images/` or set `vis.image_dir=/path/to/images`. Images are resized and
 center-cropped to the display size. Previews run every 500 optimizer steps and
 at validation end, only on global rank zero; sanity validation is not logged.
+On resume, an empty preview cache is refilled from a few validation batches at
+training start, so previews continue at the next configured step interval.
 PNG copies are saved under the TensorBoard run directory in `features/stage1/`
 or `features/stage2/`. They appear under `stage1/features` or `stage2/features`
 in W&B and TensorBoard.
