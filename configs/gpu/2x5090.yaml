@@ -1,4 +1,4 @@
-# Hardware execution preset; effective global batch = 8.
+# Hardware execution preset; effective global batch = 16.
 devices: 2
-batch_size: 1
-accumulation_steps: 4
+batch_size: 4
+accumulation_steps: 2
