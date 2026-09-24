@@ -4,15 +4,17 @@ No shard cache or shell commands. Default training selects a fixed global image
 pool without repeats; legacy hash-split cycling remains available explicitly.
 """
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import glob
 import hashlib
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import random
 import tarfile
+import time
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
@@ -94,6 +96,46 @@ def open_shard(url, endpoint=None):
 
 
 def iter_encoded_samples(shard, endpoint=None):
+    """Retry interrupted S3 shards without yielding any sample twice.
+
+    Prepared shards are immutable. Replay from the start after a body-read
+    failure, discarding already yielded pairs so worker strides stay stable.
+    The SDK's request retries do not cover failures while consuming the body.
+    """
+    if urlparse(str(shard)).scheme != "s3":
+        yield from _iter_encoded_samples(shard, endpoint)
+        return
+
+    from botocore.exceptions import (
+        ConnectionClosedError, IncompleteReadError, ReadTimeoutError,
+        ResponseStreamingError,
+    )
+
+    yielded = 0
+    retries = 3
+    for attempt in range(retries + 1):
+        try:
+            with closing(_iter_encoded_samples(shard, endpoint)) as samples:
+                for index, sample in enumerate(samples):
+                    if index < yielded:
+                        continue
+                    yielded += 1
+                    yield sample
+            return
+        except (ConnectionClosedError, IncompleteReadError, ReadTimeoutError,
+                ResponseStreamingError) as error:
+            if attempt == retries:
+                error.add_note(f"S3 shard {shard} failed after {retries} retries; {yielded} samples yielded")
+                raise
+            delay = 2 ** attempt
+            logging.getLogger(__name__).warning(
+                "Interrupted S3 shard %s (%s); retry %d/%d in %ds, replaying %d samples",
+                shard, type(error).__name__, attempt + 1, retries, delay, yielded,
+            )
+            time.sleep(delay)
+
+
+def _iter_encoded_samples(shard, endpoint=None):
     """Read adjacent JPG/JSON pairs; malformed samples fail rather than disappear."""
     with open_shard(shard, endpoint) as stream, tarfile.open(fileobj=stream, mode="r|*") as archive:
         key, sample = None, {}

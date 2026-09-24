@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from botocore.exceptions import ClientError, ResponseStreamingError
 import numpy as np
 from PIL import Image
 from pycocotools import mask as masks
@@ -44,6 +45,67 @@ class StreamingTests(unittest.TestCase):
         options = dict(shards=self.root, batch_size=2, batches_per_epoch=4,
                        max_masks=3, val_fraction=0.2, shuffle_buffer=0)
         return SA1BWebDataset(**(options | kwargs))
+
+    def interrupted_body(self, fail_after):
+        payload = (self.root / 'sa1b-000000.tar').read_bytes()
+
+        class Body(io.BytesIO):
+            def read(self, size=-1):
+                if self.tell() >= fail_after:
+                    raise ResponseStreamingError(error=OSError('Connection broken'))
+                return super().read(min(size, 512))
+
+        return Body(payload)
+
+    def test_s3_body_retries_preserve_all_samples_and_close_streams(self):
+        path = self.root / 'sa1b-000000.tar'
+        expected = list(iter_encoded_samples(path))
+        # Fail inside members, including a second failure during replay.
+        bodies = [self.interrupted_body(25088), self.interrupted_body(12800),
+                  io.BytesIO(path.read_bytes())]
+        with patch('datasets.sa1b_webdataset.s3_client') as client, \
+                patch('datasets.sa1b_webdataset.time.sleep') as sleep, \
+                self.assertLogs('datasets.sa1b_webdataset', level='WARNING'):
+            client.return_value.get_object.side_effect = [{'Body': body} for body in bodies]
+            actual = list(iter_encoded_samples('s3://bucket/data/one.tar'))
+        self.assertEqual([s['__key__'] for s in actual], [s['__key__'] for s in expected])
+        self.assertEqual([(s['jpg'], s['json']) for s in actual],
+                         [(s['jpg'], s['json']) for s in expected])
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2])
+        self.assertTrue(all(body.closed for body in bodies))
+
+    def test_s3_body_retry_exhaustion_raises_without_repeating_samples(self):
+        bodies = [self.interrupted_body(25088) for _ in range(4)]
+        actual = []
+        with patch('datasets.sa1b_webdataset.s3_client') as client, \
+                patch('datasets.sa1b_webdataset.time.sleep') as sleep, \
+                self.assertLogs('datasets.sa1b_webdataset', level='WARNING'):
+            client.return_value.get_object.side_effect = [{'Body': body} for body in bodies]
+            with self.assertRaises(ResponseStreamingError):
+                for sample in iter_encoded_samples('s3://bucket/data/one.tar'):
+                    actual.append(sample['__key__'])
+        self.assertTrue(actual)
+        self.assertEqual(len(actual), len(set(actual)))
+        self.assertEqual(sleep.call_count, 3)
+        self.assertTrue(all(body.closed for body in bodies))
+
+    def test_s3_access_errors_are_not_retried(self):
+        with patch('datasets.sa1b_webdataset.s3_client') as client, \
+                patch('datasets.sa1b_webdataset.time.sleep') as sleep:
+            client.return_value.get_object.side_effect = ClientError(
+                {'Error': {'Code': 'AccessDenied'}}, 'GetObject')
+            with self.assertRaises(ClientError):
+                list(iter_encoded_samples('s3://bucket/data/one.tar'))
+        sleep.assert_not_called()
+
+    def test_s3_early_close_closes_body(self):
+        body = io.BytesIO((self.root / 'sa1b-000000.tar').read_bytes())
+        with patch('datasets.sa1b_webdataset.s3_client') as client:
+            client.return_value.get_object.return_value = {'Body': body}
+            samples = iter_encoded_samples('s3://bucket/data/one.tar')
+            next(samples)
+            samples.close()
+        self.assertTrue(body.closed)
 
     def test_decoding_transform_alignment_padding_and_empty_masks(self):
         sample = next(iter_encoded_samples(str(self.root / 'sa1b-000000.tar')))
