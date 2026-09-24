@@ -11,6 +11,7 @@ from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from omegaconf import OmegaConf
 
 from upsamplers import norm, unnorm
+from .progress import ResumeProgressBar
 
 
 def feature_panel(image, low, high):
@@ -153,7 +154,7 @@ def create_logging(cfg, log_dir, name, stage):
             save_dir=log_dir, mode=cfg.wandb.mode, log_model=False,
             config=OmegaConf.to_container(cfg, resolve=True), tags=[stage, cfg.model_type],
         ))
-    callbacks = []
+    callbacks = [ResumeProgressBar()]
     if cfg.vis.enabled:
         callbacks.append(FeatureVisualization(
             image_dir=cfg.vis.image_dir, max_images=cfg.vis.max_images,
