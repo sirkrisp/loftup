@@ -5,6 +5,7 @@ defaults:
 
 # Environment Args
 output_root: 'output_dir'
+resume_from: auto # Latest local checkpoint for this experiment; null starts fresh.
 pytorch_data_dir: 'datasets'
 
 # Dataset args

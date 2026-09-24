@@ -28,6 +28,7 @@ from torchvision.transforms import InterpolationMode
 from upsamplers import get_upsampler, load_upsampler_weights, norm, unnorm
 from datasets.loaders import create_training_loaders
 from checkpoint_upload import configure_checkpoint_upload
+from checkpoint_resume import resolve_resume_checkpoint
 from featurizers import get_featurizer
 from utils import (
     pca,
@@ -544,6 +545,7 @@ def my_app(cfg: DictConfig) -> None:
             cfg.output_root, f"checkpoints/{cfg.upsampler_type}_hr/{name}.ckpt"
         )
 
+    resume_checkpoint = resolve_resume_checkpoint(cfg.get("resume_from"), chkpt_dir)
     os.makedirs(log_dir, exist_ok=True)
 
     # Create model
@@ -635,7 +637,7 @@ def my_app(cfg: DictConfig) -> None:
     gc.collect()
 
     # Train
-    trainer.fit(model, loader, val_loader, ckpt_path=cfg.get("resume_from"))
+    trainer.fit(model, loader, val_loader, ckpt_path=resume_checkpoint)
     trainer.save_checkpoint(chkpt_dir)
     print(f"Saved checkpoint to {chkpt_dir}")
 

@@ -28,6 +28,7 @@ from torchvision.transforms import InterpolationMode
 from upsamplers import get_upsampler, load_upsampler_weights, norm, unnorm
 from datasets.loaders import create_training_loaders
 from checkpoint_upload import configure_checkpoint_upload
+from checkpoint_resume import resolve_resume_checkpoint
 from featurizers import get_featurizer
 from utils import (
     adjust_features_with_masks,
@@ -443,6 +444,7 @@ def my_app(cfg: DictConfig) -> None:
     # Setup logging and checkpoint directories
     log_dir = join(cfg.output_root, f"logs/loftup_stage1/{name}")
     chkpt_dir = join(cfg.output_root, f"checkpoints/loftup_stage1/{name}.ckpt")
+    resume_checkpoint = resolve_resume_checkpoint(cfg.get("resume_from"), chkpt_dir)
     os.makedirs(log_dir, exist_ok=True)
     print(f"Logging to {log_dir}")
 
@@ -520,7 +522,7 @@ def my_app(cfg: DictConfig) -> None:
     gc.collect()
 
     # Start training
-    trainer.fit(model, loader, val_loader, ckpt_path=cfg.get("resume_from"))
+    trainer.fit(model, loader, val_loader, ckpt_path=resume_checkpoint)
     trainer.save_checkpoint(chkpt_dir)
     print(f"Saved model to {chkpt_dir}")
 

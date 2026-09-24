@@ -167,6 +167,15 @@ synchronously before training continues and retry three times; exhausted retries
 stop training with the local file retained. Repository access/privacy is checked
 before fitting; public repositories are rejected. Set `hf.enabled=false` to disable.
 
+Both stages default to `resume_from=auto`: rerun the same training command to
+restore the most recently modified local checkpoint for that experiment under
+`output_root`. Selection includes periodic, epoch, and final checkpoints; if none
+exists, training starts fresh. This restores Lightning's training state, including
+optimizer and step counts. It does not download checkpoints from Hugging Face.
+Use `resume_from=null` to start fresh or `resume_from=/path/to/model.ckpt` to select
+a specific checkpoint. Keep the same experiment settings and `output_root` when
+resuming so automatic selection searches the same checkpoint location.
+
 Validation logs `val/reconstruction_mse`, a feature reconstruction diagnostic.
 The old flat-file loader remains available with `dataset=sa1b`; its split settings
 do not control the default finite stream.
