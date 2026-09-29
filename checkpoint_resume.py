@@ -27,12 +27,29 @@ def resolve_resume_checkpoint(resume_from, final_checkpoint, source="local", rep
             and path.stem.startswith(prefix) and path.stem[len(prefix):].isdigit()
         )
     if not candidates:
-        print(f"No local checkpoint found for {final.stem}; starting fresh")
+        print(f"No local checkpoint found for {final.stem}")
         return None
     latest = max(candidates, key=lambda path: (path.stat().st_mtime_ns, str(path)))
     latest = str(latest.resolve())
     print(f"Automatically resuming from {latest}")
     return latest
+
+
+def resolve_stage1_checkpoint(pretrained, output_root, run_name, repo_id, source="auto"):
+    """Find Stage 1 weights locally, or download that experiment from HF."""
+    if pretrained != "auto":
+        return pretrained
+    if source not in {"auto", "local", "hf"}:
+        raise ValueError("stage1_source must be auto, local, or hf")
+    final = Path(output_root) / "checkpoints" / "loftup_stage1" / f"{run_name}.ckpt"
+    if source != "hf":
+        checkpoint = resolve_resume_checkpoint("auto", final)
+        if checkpoint is not None:
+            print(f"Initializing Stage 2 from Stage 1 checkpoint: {checkpoint}")
+            return checkpoint
+        if source == "local":
+            raise FileNotFoundError(f"No Stage 1 checkpoint found for {run_name}")
+    return latest_hf_checkpoint(repo_id, f"stage1/{run_name}")
 
 
 def latest_hf_checkpoint(repo_id, prefix):

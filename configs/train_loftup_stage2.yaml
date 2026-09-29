@@ -73,7 +73,10 @@ use_prototypes: false
 use_crop_upsampler: true
 
 # Pretrained upsampler
-pretrained_upsampler: "path/to/stage1_checkpoint.ckpt"
+pretrained_upsampler: auto
+stage1_source: auto # Prefer local; fall back to HF. Set hf to force a download/cache lookup.
+# Default Stage 1 experiment; override this name for a custom Stage 1 recipe.
+stage1_run_name: "${model_type}_${upsampler_type}_depth2_loadsize_224_upsample_size_224_${dataset}_${downsampler_type}_tv_0.001_sam_alpha_0.8_sam_reg_0.0_RGB_True_clamp_True"
 
 # SAM mask parameters
 sam_mask_reg: 0.0

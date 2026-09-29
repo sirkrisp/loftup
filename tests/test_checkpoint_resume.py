@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from hydra import compose, initialize_config_dir
 
-from checkpoint_resume import resolve_resume_checkpoint
+from checkpoint_resume import resolve_resume_checkpoint, resolve_stage1_checkpoint
 
 
 class CheckpointResumeTests(unittest.TestCase):
@@ -86,6 +86,33 @@ class CheckpointResumeTests(unittest.TestCase):
             factory.return_value.list_repo_tree.return_value = []
             with self.assertRaises(FileNotFoundError):
                 resolve_resume_checkpoint('auto', self.final, source='hf', repo_id='owner/repo', prefix='stage1/run')
+
+    def test_stage2_initialization_prefers_local_and_can_force_hf(self):
+        local = self.checkpoint('checkpoints/loftup_stage1/experiment.ckpt', 10)
+        with patch('checkpoint_resume.latest_hf_checkpoint', return_value='/cache/hf.ckpt') as download:
+            self.assertEqual(resolve_stage1_checkpoint('auto', self.root, 'experiment', 'owner/repo'), local)
+            download.assert_not_called()
+            self.assertEqual(resolve_stage1_checkpoint('auto', self.root, 'experiment', 'owner/repo', 'hf'), '/cache/hf.ckpt')
+            download.assert_called_once_with('owner/repo', 'stage1/experiment')
+
+    def test_stage2_initialization_falls_back_and_preserves_explicit_paths(self):
+        with patch('checkpoint_resume.latest_hf_checkpoint', return_value='/cache/hf.ckpt') as download:
+            self.assertEqual(resolve_stage1_checkpoint('auto', self.root, 'experiment', 'owner/repo'), '/cache/hf.ckpt')
+            download.assert_called_once_with('owner/repo', 'stage1/experiment')
+            download.reset_mock()
+            self.assertEqual(resolve_stage1_checkpoint('/explicit.ckpt', self.root, 'experiment', 'owner/repo'), '/explicit.ckpt')
+            with self.assertRaises(FileNotFoundError):
+                resolve_stage1_checkpoint('auto', self.root, 'experiment', 'owner/repo', 'local')
+            download.assert_not_called()
+
+    def test_stage2_default_experiment_matches_stage1(self):
+        config_dir = str(Path(__file__).resolve().parents[1] / 'configs')
+        with initialize_config_dir(config_dir=config_dir, version_base='1.1'):
+            cfg = compose(config_name='train_loftup_stage2')
+            self.assertEqual(cfg.pretrained_upsampler, 'auto')
+            self.assertEqual(cfg.stage1_run_name,
+                'dinov3splus_loftup_depth2_loadsize_224_upsample_size_224_sa1b_webdataset_attention_'
+                'tv_0.001_sam_alpha_0.8_sam_reg_0.0_RGB_True_clamp_True')
 
 
 if __name__ == '__main__':

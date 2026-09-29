@@ -29,7 +29,7 @@ from torchvision.transforms import InterpolationMode
 from upsamplers import get_upsampler, norm, unnorm
 from datasets.loaders import create_training_loaders
 from checkpoint_upload import configure_checkpoint_upload
-from checkpoint_resume import resolve_resume_checkpoint
+from checkpoint_resume import resolve_resume_checkpoint, resolve_stage1_checkpoint
 from featurizers import get_featurizer
 from utils import (
     pca,
@@ -508,6 +508,10 @@ class LoftUpStage2(pl.LightningModule):
 
 @hydra.main(config_path="configs", config_name="train_loftup_stage2.yaml")
 def my_app(cfg: DictConfig) -> None:
+    cfg.pretrained_upsampler = resolve_stage1_checkpoint(
+        cfg.pretrained_upsampler, cfg.output_root, cfg.stage1_run_name,
+        cfg.hf.repo_id, cfg.stage1_source,
+    )
     print(OmegaConf.to_yaml(cfg))
     print(cfg.output_root)
     seed_everything(seed=0, workers=True)

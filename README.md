@@ -268,12 +268,19 @@ You can still override individual settings without `++`, for example
 
 Stage 2 training (`train_loftup_stage2.py`) fine-tunes the Stage 1 upsampler with high-resolution supervision for improved quality.
 
-To start Stage 2 on two GPUs from a downloaded Stage 1 Lightning checkpoint:
+To start Stage 2 on two GPUs with automatic Stage 1 checkpoint selection:
 
 ```bash
 uv run python train_loftup_stage2.py num_gpus=2 batch_size=1 num_workers=2 \
-  pretrained_upsampler=/path/to/stage1_120000.ckpt wandb.enabled=true resume_from=null
+  pretrained_upsampler=auto wandb.enabled=true resume_from=null
 ```
+
+`pretrained_upsampler=auto` selects the newest matching local Stage 1 checkpoint
+under `output_root`, falling back to a cached HF download from `hf.repo_id`.
+Use `stage1_source=hf` to prefer HF even when a local checkpoint exists, or supply
+an explicit `pretrained_upsampler=/path/to/checkpoint.ckpt`. `stage1_run_name`
+defaults to the standard Stage 1 experiment for the selected backbone; override
+it if Stage 1 used a different recipe. HF access failures stop initialization.
 
 Stage 2 uses `num_gpus` directly, not the Stage 1 hardware presets. Start with
 one image per GPU because it loads 896-pixel images and masks. The pretrained
