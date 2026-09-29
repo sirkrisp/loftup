@@ -171,7 +171,10 @@ class CrossAttentionLayer(nn.Module):
         value = value.permute(1, 0, 2)  # (seq_len, batch_size, dim)
 
         # Apply multi-head attention (cross-attention)
-        attn_output, _ = self.attention(query, key, value)
+        # We only use the output features. Returning attention weights forces
+        # a dense B*heads*query_pixels*key_pixels matrix (8 GiB at Stage 2's
+        # 512px augmentation with batch size 2). SDPA avoids storing that matrix.
+        attn_output, _ = self.attention(query, key, value, need_weights=False)
 
         # Return to original format (batch_size, seq_len, dim)
         attn_output = attn_output.permute(1, 0, 2)

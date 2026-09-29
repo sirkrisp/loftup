@@ -38,6 +38,7 @@ from utils import (
     mask_feature_similarity_loss,
 )
 from training_utils import (
+    affinity_mse_loss,
     load_stage1_training_weights,
     validation_reconstruction_loss,
     ScaleNet,
@@ -348,14 +349,12 @@ class LoftUpStage2(pl.LightningModule):
 
                 if self.use_crop_upsampler:
                     if self.affinity_loss:
-                        aff_mat_hr = compute_affinity_matrix_batch(hr_feats_cropped)
-                        aff_mat_cropped = compute_affinity_matrix_batch(
-                            cropped_feats_resize
-                        )
                         if self.l1_affinity:
+                            aff_mat_hr = compute_affinity_matrix_batch(hr_feats_cropped)
+                            aff_mat_cropped = compute_affinity_matrix_batch(cropped_feats_resize)
                             hr_loss = F.l1_loss(aff_mat_hr, aff_mat_cropped)
                         else:
-                            hr_loss = F.mse_loss(aff_mat_hr, aff_mat_cropped)
+                            hr_loss = affinity_mse_loss(hr_feats_cropped, cropped_feats_resize)
                     else:
                         hr_loss = F.mse_loss(hr_feats_cropped, cropped_feats_resize)
                 else:

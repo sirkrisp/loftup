@@ -291,6 +291,11 @@ the Stage 1 upsampler supplies crop supervision from the first training step.
 Use `resume_from=auto` on subsequent Stage 2 restarts to restore Stage 2's own
 optimizer and progress. Validation loads images without allocating SAM masks.
 
+Cross-attention disables unused attention-weight output to enable optimized
+scaled-dot-product attention. The default MSE affinity loss uses equivalent
+channel Gram matrices instead of allocating pixel-by-pixel affinity matrices.
+The optional L1 affinity loss still uses dense spatial matrices.
+
 **Example training command:**
 ```bash
 python train_loftup_stage2.py ++dataset="sa1b_webdataset" ++epochs=1 ++hr_res=896 ++batch_size=2 ++consistency_method="bilinear" ++num_gpus=4 ++affinity_loss=True ++pytorch_data_dir='datasets' ++pretrained_upsampler="path/to/stage1_checkpoint.ckpt" ++upsampler_type="loftup" ++sam_mask_hr_alpha=0.5 ++sam_mask_reg=0.0 ++lr=1e-3 ++use_featup=False ++aug_size=True ++n_jitters=2

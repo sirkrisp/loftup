@@ -222,6 +222,36 @@ def compute_affinity_matrix_batch(feature_map, alpha=0.1):
     return affinity_matrix_batch
 
 
+def affinity_mse_loss(student, teacher, alpha=0.1):
+    """MSE of spatial cosine affinities without allocating pixel-by-pixel matrices.
+
+    ||X^T X - Y^T Y||_F^2 equals
+    ||X X^T||_F^2 + ||Y Y^T||_F^2 - 2 ||X Y^T||_F^2.
+    Thus storage scales with channels squared instead of pixels squared.
+    """
+    if student.shape != teacher.shape:
+        raise ValueError("Affinity features must have matching shapes")
+    if not 0 <= alpha < 0.5:
+        raise ValueError("Affinity alpha must satisfy 0 <= alpha < 0.5")
+    _, _, height, width = student.shape
+
+    def vectors(features):
+        features = features[:, :, int(alpha * height):int((1 - alpha) * height),
+                            int(alpha * width):int((1 - alpha) * width)].flatten(2)
+        if features.dtype in (torch.float16, torch.bfloat16):
+            features = features.float()
+        return features / (features.norm(dim=1, keepdim=True) + 1e-6)
+
+    # Keep Gram products in float32 under mixed precision (float64 in tests).
+    with torch.autocast(device_type=student.device.type, enabled=False):
+        x, y = vectors(student), vectors(teacher)
+        xx, yy, xy = x @ x.transpose(1, 2), y @ y.transpose(1, 2), x @ y.transpose(1, 2)
+        # Double precision reduction limits cancellation near identical features.
+        squared = (xx.double().square().sum((1, 2)) + yy.double().square().sum((1, 2))
+                   - 2 * xy.double().square().sum((1, 2)))
+        return (squared.clamp_min(0).mean() / x.shape[-1] ** 2).to(x.dtype)
+
+
 def project(feats, proj):
     """
     Project features using random projection matrix.

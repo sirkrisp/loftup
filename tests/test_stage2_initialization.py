@@ -50,7 +50,7 @@ class Stage2InitializationTests(unittest.TestCase):
                     tv_weight=0, upsampler='loftup', downsampler='attention',
                     chkpt_dir=str(Path(directory) / 'stage2.ckpt'), hr_res=32, hr_weight=20,
                     consistency_method='bilinear', pretrained_upsampler=checkpoint,
-                    affinity_loss=False, rec_weight=1, l1_affinity=False, use_prototypes=False,
+                    affinity_loss=True, rec_weight=1, l1_affinity=False, use_prototypes=False,
                     n_freqs=20, sam_mask_reg=0, sam_mask_hr_alpha=0, sam_mask_hr_reg=0,
                     use_crop_upsampler=True)
             for key, value in model.model.state_dict().items():
