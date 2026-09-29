@@ -1,9 +1,10 @@
 from copy import deepcopy
+from contextlib import nullcontext
 import unittest
 
 import torch
 
-from upsamplers.layers import CrossAttentionLayer
+from upsamplers.layers import CrossAttentionLayer, CATransformer
 
 
 def dense_attention(layer, query, key, value):
@@ -15,6 +16,28 @@ def dense_attention(layer, query, key, value):
 
 
 class CrossAttentionTests(unittest.TestCase):
+    def test_checkpointing_preserves_outputs_and_gradients(self):
+        devices = ['cpu'] + (['cuda'] if torch.cuda.is_available() else [])
+        for device in devices:
+            with self.subTest(device=device):
+                dtype = torch.double if device == 'cpu' else torch.float32
+                original = CATransformer(20, 2, 4, 5, 16).to(device=device, dtype=dtype)
+                recomputed = deepcopy(original)
+                recomputed.activation_checkpointing = True
+                inputs = [torch.randn(2, size, 20, device=device, dtype=dtype, requires_grad=True)
+                          for size in (37, 11)]
+                copies = [value.detach().clone().requires_grad_() for value in inputs]
+                context = torch.autocast('cuda', dtype=torch.float16) if device == 'cuda' else nullcontext()
+                with context:
+                    expected, actual = original(*inputs), recomputed(*copies)
+                    expected_loss = expected.square().mean()
+                    actual_loss = actual.square().mean()
+                expected_loss.backward()
+                actual_loss.backward()
+                torch.testing.assert_close(actual, expected)
+                for a, b in zip(inputs + list(original.parameters()), copies + list(recomputed.parameters())):
+                    torch.testing.assert_close(a.grad, b.grad, atol=1e-5, rtol=1e-4)
+
     def test_outputs_and_gradients_match_dense_attention(self):
         torch.manual_seed(1)
         efficient = CrossAttentionLayer(20, heads=4).double()

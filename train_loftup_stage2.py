@@ -149,6 +149,10 @@ class LoftUpStage2(pl.LightningModule):
         self.upsampler = get_upsampler(
             upsampler, self.dim, lr_size=self.final_size, n_freqs=self.n_freqs, cfg=cfg
         )
+        if hasattr(self.upsampler, "ca_transformer"):
+            self.upsampler.ca_transformer.activation_checkpointing = (
+                cfg.get("activation_checkpointing", True) if cfg is not None else True
+            )
 
         # Initialize downsampler
         if downsampler == "attention":

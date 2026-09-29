@@ -184,6 +184,7 @@ class CATransformer(nn.Module):
     def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout=0.):
         super().__init__()
         self.norm = nn.LayerNorm(dim)
+        self.activation_checkpointing = False
         self.layers = nn.ModuleList([])
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
@@ -193,8 +194,17 @@ class CATransformer(nn.Module):
 
     def forward(self, query, key_value):
         for cross_attn, ff in self.layers:
-            query = cross_attn(query, key_value, key_value) + query  # Cross-Attention
-            # query = cross_attn(query, key_value, key_value) ## Because we are transforming imgs to features, we don't need to add the query back
-            query = ff(query) + query  # Feed-Forward residual connection
+            if self.activation_checkpointing and self.training and torch.is_grad_enabled():
+                from torch.utils.checkpoint import checkpoint
+                query = checkpoint(self._block, query, key_value, cross_attn, ff, use_reentrant=False)
+            else:
+                query = self._block(query, key_value, cross_attn, ff)
 
         return self.norm(query)
+
+    @staticmethod
+    def _block(query, key_value, cross_attn, ff):
+        # These blocks contain LayerNorm, not stateful BatchNorm. Recomputing
+        # them therefore doesn't update running statistics a second time.
+        query = cross_attn(query, key_value, key_value) + query
+        return ff(query) + query

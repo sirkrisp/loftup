@@ -295,6 +295,9 @@ Cross-attention disables unused attention-weight output to enable optimized
 scaled-dot-product attention. The default MSE affinity loss uses equivalent
 channel Gram matrices instead of allocating pixel-by-pixel affinity matrices.
 The optional L1 affinity loss still uses dense spatial matrices.
+Stage 2 defaults to `activation_checkpointing=true`, recomputing transformer
+blocks during backward to reduce retained activations. BatchNorm layers remain
+outside the recomputed blocks, so their running statistics are updated normally.
 
 **Example training command:**
 ```bash
