@@ -1,8 +1,10 @@
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from hydra import compose, initialize_config_dir
 import torch
 import torch.nn.functional as F
 
@@ -20,6 +22,16 @@ class TinyUpsampler(torch.nn.Module):
 
 
 class Stage2InitializationTests(unittest.TestCase):
+    def test_gpu_preset_and_explicit_overrides(self):
+        config_dir = str(Path(__file__).resolve().parents[1] / 'configs')
+        with initialize_config_dir(config_dir=config_dir, version_base='1.1'):
+            cfg = compose(config_name='train_loftup_stage2')
+            self.assertEqual((cfg.num_gpus, cfg.batch_size, cfg.accumulation_steps), (4, 2, 1))
+            cfg = compose(config_name='train_loftup_stage2', overrides=['gpu=2x5090'])
+            self.assertEqual((cfg.num_gpus, cfg.batch_size, cfg.accumulation_steps), (2, 2, 2))
+            cfg = compose(config_name='train_loftup_stage2', overrides=['gpu=2x5090', 'batch_size=1'])
+            self.assertEqual((cfg.num_gpus, cfg.batch_size, cfg.accumulation_steps), (2, 1, 2))
+
     def test_pretrained_student_trains_and_fixed_teacher_produces_hr_loss(self):
         with tempfile.TemporaryDirectory() as directory:
             source_model = torch.nn.Sequential(torch.nn.Conv2d(3, 3, 1), torch.nn.AvgPool2d(4))
@@ -48,11 +60,31 @@ class Stage2InitializationTests(unittest.TestCase):
             self.assertEqual(model.ema_update_after, 0)
             teacher_before = model.crop_upsampler.scale.detach().clone()
             optimizer = model.configure_optimizers()
+            model.accumulation_steps = 2
+            model._trainer = SimpleNamespace(num_training_batches=3, global_step=0)
+            losses = []
+
+            def backward(loss):
+                losses.append(float(loss.detach()))
+                loss.backward()
+
             with patch.object(model, 'optimizers', return_value=optimizer), \
-                    patch.object(model, 'manual_backward', side_effect=lambda loss: loss.backward()), \
+                    patch.object(model, 'manual_backward', side_effect=backward), \
+                    patch.object(optimizer, 'step', wraps=optimizer.step) as step, \
+                    patch.object(optimizer, 'zero_grad', wraps=optimizer.zero_grad) as zero, \
                     patch.object(model, 'clip_gradients'), patch.object(model, 'log') as log, \
                     patch('train_loftup_stage2.random.choice', return_value=16):
                 model.training_step({'img': torch.randn(1, 3, 32, 32), 'label': None}, 0)
+                step.assert_not_called()
+                torch.testing.assert_close(model.upsampler.scale, teacher_before)
+                model.training_step({'img': torch.randn(1, 3, 32, 32), 'label': None}, 1)
+                self.assertEqual(step.call_count, 1)
+                model.training_step({'img': torch.randn(1, 3, 32, 32), 'label': None}, 2)
+                self.assertEqual(step.call_count, 2)
+                self.assertEqual(zero.call_count, 2)
+            totals = [call.args[1] for call in log.call_args_list if call.args[0] == 'loss/total']
+            for backward_loss, total, divisor in zip(losses, totals, (2, 2, 1)):
+                self.assertAlmostEqual(backward_loss, total / divisor, places=6)
             logged = {call.args[0]: call.args[1] for call in log.call_args_list}
             self.assertGreater(float(logged['loss/hr']), 0)
             torch.testing.assert_close(model.crop_upsampler.scale, teacher_before)

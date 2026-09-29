@@ -271,7 +271,7 @@ Stage 2 training (`train_loftup_stage2.py`) fine-tunes the Stage 1 upsampler wit
 To start Stage 2 on two GPUs with automatic Stage 1 checkpoint selection:
 
 ```bash
-uv run python train_loftup_stage2.py num_gpus=2 batch_size=1 num_workers=2 \
+uv run python train_loftup_stage2.py gpu=2x5090 num_workers=2 \
   pretrained_upsampler=auto wandb.enabled=true resume_from=null
 ```
 
@@ -282,8 +282,10 @@ an explicit `pretrained_upsampler=/path/to/checkpoint.ckpt`. `stage1_run_name`
 defaults to the standard Stage 1 experiment for the selected backbone; override
 it if Stage 1 used a different recipe. HF access failures stop initialization.
 
-Stage 2 uses `num_gpus` directly, not the Stage 1 hardware presets. Start with
-one image per GPU because it loads 896-pixel images and masks. The pretrained
+Stage 2 supports the shared GPU presets. `gpu=2x5090` selects two GPUs, batch
+size 2 per GPU, and 2 accumulation steps (effective global batch 8). Add
+`batch_size=1` if the 896-pixel workload exceeds available memory. Without a
+preset, Stage 2 retains four GPUs, batch size 2, and no accumulation. The pretrained
 checkpoint initializes the featurizer and trainable student; a frozen copy of
 the Stage 1 upsampler supplies crop supervision from the first training step.
 Use `resume_from=auto` on subsequent Stage 2 restarts to restore Stage 2's own

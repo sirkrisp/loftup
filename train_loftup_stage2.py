@@ -198,6 +198,9 @@ class LoftUpStage2(pl.LightningModule):
                     update_every=10,
                 )
 
+        self.accumulation_steps = int(cfg.get("accumulation_steps", 1)) if cfg is not None else 1
+        if self.accumulation_steps < 1:
+            raise ValueError("accumulation_steps must be positive")
         self.automatic_optimization = False
 
     def project(self, feats, proj):
@@ -219,7 +222,11 @@ class LoftUpStage2(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         """Training step with high-resolution supervision."""
         opt = self.optimizers()
-        opt.zero_grad()
+        window_start = (batch_idx // self.accumulation_steps) * self.accumulation_steps
+        window_size = min(self.accumulation_steps, int(self.trainer.num_training_batches) - window_start)
+        if batch_idx == window_start:
+            opt.zero_grad()
+        update_now = batch_idx + 1 == window_start + window_size
 
         # Process batch
         if isinstance(batch, dict):
@@ -434,11 +441,7 @@ class LoftUpStage2(pl.LightningModule):
         full_total_loss += self.hr_weight * full_hr_loss
 
         # Manual backward pass
-        self.manual_backward(full_total_loss)
-
-        # Update EMA
-        if isinstance(getattr(self, "crop_upsampler", None), EMA):
-            self.crop_upsampler.update()
+        self.manual_backward(full_total_loss / window_size)
 
         # Logging
         full_total_loss = full_total_loss.item()
@@ -448,23 +451,26 @@ class LoftUpStage2(pl.LightningModule):
         self.log("loss/hr", full_hr_loss)
         self.log("loss/total", full_total_loss)
 
-        if self.global_step % 100 == 0:
+        if update_now and self.global_step % 100 == 0:
             print(
                 f"Step {self.global_step}: Total loss: {full_total_loss}, Rec loss: {full_rec_loss}, HR loss: {full_hr_loss}"
             )
 
-        if self.global_step > 0 and self.global_step % 5000 == 0:
+        if update_now and self.global_step > 0 and self.global_step % 5000 == 0:
             self.trainer.save_checkpoint(
                 self.chkpt_dir[:-5] + f"_{self.global_step}.ckpt"
             )
 
         # Gradient clipping for early steps
-        if self.global_step < 10:
+        if update_now and self.global_step < 10:
             self.clip_gradients(
                 opt, gradient_clip_val=0.0001, gradient_clip_algorithm="norm"
             )
 
-        opt.step()
+        if update_now:
+            opt.step()
+            if isinstance(getattr(self, "crop_upsampler", None), EMA):
+                self.crop_upsampler.update()
         return None
 
     def validation_step(self, batch, batch_idx):
@@ -508,11 +514,14 @@ class LoftUpStage2(pl.LightningModule):
 
 @hydra.main(config_path="configs", config_name="train_loftup_stage2.yaml")
 def my_app(cfg: DictConfig) -> None:
+    if min(cfg.batch_size, cfg.num_gpus, cfg.accumulation_steps) < 1:
+        raise ValueError("batch_size, num_gpus, and accumulation_steps must be positive")
     cfg.pretrained_upsampler = resolve_stage1_checkpoint(
         cfg.pretrained_upsampler, cfg.output_root, cfg.stage1_run_name,
         cfg.hf.repo_id, cfg.stage1_source,
     )
     print(OmegaConf.to_yaml(cfg))
+    print(f"Effective global batch: {cfg.batch_size * cfg.num_gpus * cfg.accumulation_steps}")
     print(cfg.output_root)
     seed_everything(seed=0, workers=True)
 

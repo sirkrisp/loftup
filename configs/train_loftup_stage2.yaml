@@ -1,3 +1,7 @@
+defaults:
+  - gpu: null # Optional hardware preset; no preset preserves the Stage 2 defaults.
+  - _self_
+
 # Environment Args
 output_root: 'output_dir'
 resume_from: auto # Latest local checkpoint for this experiment; null starts fresh.
@@ -47,13 +51,14 @@ n_freqs: 20
 use_featup: false
 
 # Training args
-batch_size: 2
+batch_size: ${oc.select:gpu.batch_size,2}
+accumulation_steps: ${oc.select:gpu.accumulation_steps,1}
 epochs: 1
 num_workers: 8
 lr: 1e-3
 load_size: 224
 upsample_size: 224
-num_gpus: 4
+num_gpus: ${oc.select:gpu.devices,4}
 
 # Jittering args
 n_jitters: 2
