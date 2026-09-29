@@ -129,12 +129,15 @@ class ResumableS3Stream:
                 if not data and self.offset < self.length:
                     raise IncompleteReadError(actual_bytes=self.offset, expected_bytes=self.length)
                 self.offset += len(data)
+                if data:
+                    # Only failures without delivered bytes share a retry budget.
+                    self.attempts = 0
                 return data
             except (ConnectionClosedError, IncompleteReadError, ReadTimeoutError,
                     ResponseStreamingError) as error:
                 self.close()
                 if self.attempts == 20:
-                    error.add_note(f"S3 shard {self.url} failed after 20 retries at byte {self.offset}")
+                    error.add_note(f"S3 shard {self.url} failed after 20 retries without progress at byte {self.offset}")
                     raise
                 delay = min(2 ** self.attempts, 30)
                 self.attempts += 1
@@ -444,7 +447,7 @@ def make_webdataset_loaders(cfg, transform, target_transform):
                             batches_per_epoch=options.val_batches, **common)
     kwargs = dict(num_workers=cfg.num_workers, pin_memory=True)
     if cfg.num_workers:
-        kwargs["prefetch_factor"] = options.get("prefetch_factor", 1)
+        kwargs["prefetch_factor"] = options.get("prefetch_factor", 2)
         kwargs["timeout"] = options.get("worker_timeout", 600)
     return (StreamingDataLoader(train, batch_size=cfg.batch_size, **kwargs),
             StreamingDataLoader(val, batch_size=1, **kwargs))

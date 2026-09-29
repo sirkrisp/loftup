@@ -96,6 +96,24 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2])
         self.assertTrue(all(body.closed for body in bodies))
 
+    def test_s3_progress_resets_retry_limit_and_backoff(self):
+        path = self.root / 'sa1b-000000.tar'
+        expected = list(iter_encoded_samples(path))
+        # Each pair fails twice at one offset; subsequent connections make progress.
+        # More than 20 interruptions across the shard must still recover.
+        bodies = [self.interrupted_body(offset)
+                  for offset in range(512, 512 * 26, 512) for _ in range(2)]
+        bodies.append(io.BytesIO(path.read_bytes()))
+        with patch('datasets.sa1b_webdataset.s3_client') as client, \
+                patch('datasets.sa1b_webdataset.time.sleep') as sleep, \
+                self.assertLogs('datasets.sa1b_webdataset', level='WARNING'):
+            client.return_value.get_object.side_effect = self.s3_responses(bodies)
+            actual = list(iter_encoded_samples('s3://bucket/data/one.tar'))
+        self.assertEqual([(s['__key__'], s['jpg'], s['json']) for s in actual],
+                         [(s['__key__'], s['jpg'], s['json']) for s in expected])
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2] * 25)
+        self.assertTrue(all(body.closed for body in bodies))
+
     def test_s3_body_retry_exhaustion_raises_without_repeating_samples(self):
         bodies = [self.interrupted_body(25088) for _ in range(21)]
         actual = []
