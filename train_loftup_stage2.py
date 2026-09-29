@@ -419,14 +419,14 @@ class LoftUpStage2(pl.LightningModule):
             # Compute entropy loss
             if self.filter_ent_weight > 0.0:
                 entropy_loss = entropy(self.downsampler.get_kernel())
-                full_entropy_loss += entropy_loss.item()
+                full_entropy_loss += entropy_loss.detach()
             else:
                 entropy_loss = 0
 
             # Compute TV loss
             if self.tv_weight > 0 and i == 0:
                 tv_loss = self.tv(hr_feats)
-                full_tv_loss += tv_loss.item()
+                full_tv_loss += tv_loss.detach()
             else:
                 tv_loss = 0.0
 
@@ -438,8 +438,6 @@ class LoftUpStage2(pl.LightningModule):
             )
             full_total_loss += loss
 
-            torch.cuda.empty_cache()
-
         # Add HR loss to total loss
         full_total_loss += self.hr_weight * full_hr_loss
 
@@ -447,7 +445,7 @@ class LoftUpStage2(pl.LightningModule):
         self.manual_backward(full_total_loss / window_size)
 
         # Logging
-        full_total_loss = full_total_loss.item()
+        full_total_loss = full_total_loss.detach()
         self.log("loss/ent", full_entropy_loss)
         self.log("loss/tv", full_tv_loss)
         self.log("loss/rec", full_rec_loss)
@@ -649,6 +647,7 @@ def my_app(cfg: DictConfig) -> None:
         plugins=checkpoint_plugins,
         reload_dataloaders_every_n_epochs=1,
         precision=16 if torch.cuda.is_available() else 32,
+        profiler=cfg.profiler,
     )
 
     # Clean up memory

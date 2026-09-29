@@ -54,6 +54,7 @@ use_featup: false
 batch_size: ${oc.select:gpu.batch_size,2}
 accumulation_steps: ${oc.select:gpu.accumulation_steps,1}
 activation_checkpointing: true # Recompute transformer blocks in backward to save VRAM.
+profiler: null # Set simple to report loader/training timings when the run exits.
 epochs: 1
 num_workers: 8
 lr: 1e-3

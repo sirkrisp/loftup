@@ -82,7 +82,7 @@ class Stage2InitializationTests(unittest.TestCase):
                 model.training_step({'img': torch.randn(1, 3, 32, 32), 'label': None}, 2)
                 self.assertEqual(step.call_count, 2)
                 self.assertEqual(zero.call_count, 2)
-            totals = [call.args[1] for call in log.call_args_list if call.args[0] == 'loss/total']
+            totals = [float(call.args[1]) for call in log.call_args_list if call.args[0] == 'loss/total']
             for backward_loss, total, divisor in zip(losses, totals, (2, 2, 1)):
                 self.assertAlmostEqual(backward_loss, total / divisor, places=6)
             logged = {call.args[0]: call.args[1] for call in log.call_args_list}
