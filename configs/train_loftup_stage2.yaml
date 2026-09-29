@@ -53,6 +53,8 @@ use_featup: false
 # Training args
 batch_size: ${oc.select:gpu.batch_size,2}
 accumulation_steps: ${oc.select:gpu.accumulation_steps,1}
+checkpoint_every_n_steps: 1000 # Optimizer steps; completed saves also upload to HF.
+validation_every_n_steps: 1000 # Optimizer steps; evaluates the configured validation set.
 activation_checkpointing: true # Recompute transformer blocks in backward to save VRAM.
 profiler: null # Set simple to report loader/training timings when the run exits.
 epochs: 1

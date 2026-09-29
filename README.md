@@ -290,6 +290,12 @@ checkpoint initializes the featurizer and trainable student; a frozen copy of
 the Stage 1 upsampler supplies crop supervision from the first training step.
 Use `resume_from=auto` on subsequent Stage 2 restarts to restore Stage 2's own
 optimizer and progress. Validation loads images without allocating SAM masks.
+Stage 2 saves and uploads periodic checkpoints every 1,000 optimizer steps;
+override `checkpoint_every_n_steps` to change this interval.
+Stage 2 also evaluates the configured validation set every 1,000 optimizer
+steps (`validation_every_n_steps`). With accumulation 2 this is every 2,000
+training batches; the default epoch ends on a validation boundary. Shorter
+epochs validate at epoch end. Full validation adds runtime to each interval.
 
 Cross-attention disables unused attention-weight output to enable optimized
 scaled-dot-product attention. The default MSE affinity loss uses equivalent

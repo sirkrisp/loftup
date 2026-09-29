@@ -206,6 +206,9 @@ class LoftUpStage2(pl.LightningModule):
         self.accumulation_steps = int(cfg.get("accumulation_steps", 1)) if cfg is not None else 1
         if self.accumulation_steps < 1:
             raise ValueError("accumulation_steps must be positive")
+        self.checkpoint_every_n_steps = int(cfg.get("checkpoint_every_n_steps", 1000)) if cfg is not None else 1000
+        if self.checkpoint_every_n_steps < 1:
+            raise ValueError("checkpoint_every_n_steps must be positive")
         self.automatic_optimization = False
 
     def project(self, feats, proj):
@@ -457,7 +460,7 @@ class LoftUpStage2(pl.LightningModule):
                 f"Step {self.global_step}: Total loss: {full_total_loss}, Rec loss: {full_rec_loss}, HR loss: {full_hr_loss}"
             )
 
-        if update_now and self.global_step > 0 and self.global_step % 5000 == 0:
+        if update_now and self.global_step > 0 and self.global_step % self.checkpoint_every_n_steps == 0:
             self.trainer.save_checkpoint(
                 self.chkpt_dir[:-5] + f"_{self.global_step}.ckpt"
             )
@@ -517,6 +520,8 @@ class LoftUpStage2(pl.LightningModule):
 def my_app(cfg: DictConfig) -> None:
     if min(cfg.batch_size, cfg.num_gpus, cfg.accumulation_steps) < 1:
         raise ValueError("batch_size, num_gpus, and accumulation_steps must be positive")
+    if cfg.validation_every_n_steps < 1:
+        raise ValueError("validation_every_n_steps must be positive")
     cfg.pretrained_upsampler = resolve_stage1_checkpoint(
         cfg.pretrained_upsampler, cfg.output_root, cfg.stage1_run_name,
         cfg.hf.repo_id, cfg.stage1_source,
@@ -629,7 +634,7 @@ def my_app(cfg: DictConfig) -> None:
 
     # Setup logging and callbacks
     loggers, callbacks = create_logging(cfg, log_dir, name, "stage2")
-    callbacks.append(ModelCheckpoint(chkpt_dir[:-5], every_n_epochs=1))
+    callbacks.append(ModelCheckpoint(chkpt_dir[:-5], every_n_epochs=1, save_on_train_epoch_end=True))
     checkpoint_plugins = configure_checkpoint_upload(cfg, callbacks, "stage2", name)
 
     # Create trainer
@@ -641,7 +646,9 @@ def my_app(cfg: DictConfig) -> None:
         devices=cfg.num_gpus if torch.cuda.is_available() else 1,
         max_epochs=cfg.epochs,
         logger=loggers,
-        val_check_interval=1.0,
+        # Lightning counts loader batches here, whereas our interval counts
+        # optimizer updates. Short epochs still validate at their end.
+        val_check_interval=min(len(loader), cfg.validation_every_n_steps * cfg.accumulation_steps),
         log_every_n_steps=10,
         callbacks=callbacks,
         plugins=checkpoint_plugins,

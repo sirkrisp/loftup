@@ -7,6 +7,8 @@ from unittest.mock import patch
 from hydra import compose, initialize_config_dir
 import torch
 import torch.nn.functional as F
+from torch.utils.data import DataLoader, TensorDataset
+from pytorch_lightning import LightningModule, Trainer
 
 from train_loftup_stage2 import LoftUpStage2
 from training_utils import load_stage1_training_weights
@@ -29,8 +31,41 @@ class Stage2InitializationTests(unittest.TestCase):
             self.assertEqual((cfg.num_gpus, cfg.batch_size, cfg.accumulation_steps), (4, 2, 1))
             cfg = compose(config_name='train_loftup_stage2', overrides=['gpu=2x5090'])
             self.assertEqual((cfg.num_gpus, cfg.batch_size, cfg.accumulation_steps), (2, 2, 2))
+            self.assertEqual(cfg.validation_every_n_steps * cfg.accumulation_steps, 2000)
             cfg = compose(config_name='train_loftup_stage2', overrides=['gpu=2x5090', 'batch_size=1'])
             self.assertEqual((cfg.num_gpus, cfg.batch_size, cfg.accumulation_steps), (2, 1, 2))
+
+    def test_validation_interval_counts_accumulated_optimizer_steps(self):
+        class AccumulatingModel(LightningModule):
+            def __init__(self):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.ones(()))
+                self.automatic_optimization = False
+                self.validation_steps = []
+
+            def training_step(self, batch, batch_idx):
+                opt = self.optimizers()
+                if batch_idx % 2 == 0:
+                    opt.zero_grad()
+                self.manual_backward(self.weight.square() / 2)
+                if batch_idx % 2 == 1:
+                    opt.step()
+
+            def validation_step(self, batch, batch_idx):
+                self.validation_steps.append(self.global_step)
+
+            def configure_optimizers(self):
+                return torch.optim.SGD(self.parameters(), lr=.01)
+
+        train = DataLoader(TensorDataset(torch.ones(8, 1)), batch_size=1)
+        val = DataLoader(TensorDataset(torch.ones(1, 1)), batch_size=1)
+        model = AccumulatingModel()
+        trainer = Trainer(accelerator='cpu', devices=1, max_epochs=1,
+                          val_check_interval=min(len(train), 2 * 2), num_sanity_val_steps=0,
+                          logger=False, enable_checkpointing=False,
+                          enable_progress_bar=False, enable_model_summary=False)
+        trainer.fit(model, train, val)
+        self.assertEqual(model.validation_steps, [2, 4])
 
     def test_pretrained_student_trains_and_fixed_teacher_produces_hr_loss(self):
         with tempfile.TemporaryDirectory() as directory:
