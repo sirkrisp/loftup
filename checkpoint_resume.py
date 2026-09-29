@@ -1,12 +1,16 @@
-"""Resolve automatic resume within one experiment's local checkpoint files."""
+"""Resolve automatic resume within one experiment's local or HF checkpoint files."""
 
 from pathlib import Path
 
 
-def resolve_resume_checkpoint(resume_from, final_checkpoint):
+def resolve_resume_checkpoint(resume_from, final_checkpoint, source="local", repo_id=None, prefix=None):
     """Use save time across periodic, epoch, and final checkpoints for this run."""
     if resume_from not in ("auto", "latest"):
         return resume_from
+    if source == "hf":
+        return latest_hf_checkpoint(repo_id, prefix)
+    if source != "local":
+        raise ValueError("resume_source must be local or hf")
 
     final = Path(final_checkpoint).expanduser()
     candidates = [final] if final.is_file() else []
@@ -29,3 +33,22 @@ def resolve_resume_checkpoint(resume_from, final_checkpoint):
     latest = str(latest.resolve())
     print(f"Automatically resuming from {latest}")
     return latest
+
+
+def latest_hf_checkpoint(repo_id, prefix):
+    """Download the newest uploaded checkpoint for one experiment, pinned to a commit."""
+    from huggingface_hub import HfApi, hf_hub_download
+
+    if not repo_id or not prefix:
+        raise ValueError("HF resume requires a repository and experiment prefix")
+    api = HfApi()
+    revision = api.repo_info(repo_id, repo_type="model").sha
+    candidates = [entry for entry in api.list_repo_tree(
+        repo_id, repo_type="model", path_in_repo=prefix, revision=revision,
+        recursive=True, expand=True,
+    ) if entry.path.startswith(prefix.rstrip('/') + '/') and entry.path.endswith('.ckpt')]
+    if not candidates:
+        raise FileNotFoundError(f"No HF checkpoints found in {repo_id}/{prefix}")
+    latest = max(candidates, key=lambda entry: (entry.last_commit.date, entry.path))
+    print(f"Downloading resume checkpoint from HF: {repo_id}/{latest.path}")
+    return hf_hub_download(repo_id, latest.path, repo_type="model", revision=revision)

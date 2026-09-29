@@ -25,6 +25,7 @@ webdataset:
   max_masks: 150
   shuffle_buffer: 32
   prefetch_factor: 1 # Bounds memory occupied by decoded SAM masks.
+  worker_timeout: 600 # Fail stalled workers before the 30-minute DDP timeout.
 
 hf:
   enabled: true

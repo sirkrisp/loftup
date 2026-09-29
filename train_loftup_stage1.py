@@ -444,7 +444,12 @@ def my_app(cfg: DictConfig) -> None:
     # Setup logging and checkpoint directories
     log_dir = join(cfg.output_root, f"logs/loftup_stage1/{name}")
     chkpt_dir = join(cfg.output_root, f"checkpoints/loftup_stage1/{name}.ckpt")
-    resume_checkpoint = resolve_resume_checkpoint(cfg.get("resume_from"), chkpt_dir)
+    resume_checkpoint = resolve_resume_checkpoint(
+        cfg.get("resume_from"), chkpt_dir, source=cfg.resume_source,
+        repo_id=cfg.hf.repo_id, prefix=f"stage1/{name}",
+    )
+    if cfg.validate_only and resume_checkpoint is None:
+        raise ValueError("Validation-only requires an existing resume checkpoint")
     os.makedirs(log_dir, exist_ok=True)
     print(f"Logging to {log_dir}")
 
@@ -498,8 +503,10 @@ def my_app(cfg: DictConfig) -> None:
 
     # Setup logging and callbacks
     loggers, callbacks = create_logging(cfg, log_dir, name, "stage1")
-    callbacks.append(ModelCheckpoint(chkpt_dir[:-5], every_n_epochs=1))
-    checkpoint_plugins = configure_checkpoint_upload(cfg, callbacks, "stage1", name)
+    checkpoint_plugins = []
+    if not cfg.validate_only:
+        callbacks.append(ModelCheckpoint(chkpt_dir[:-5], every_n_epochs=1))
+        checkpoint_plugins = configure_checkpoint_upload(cfg, callbacks, "stage1", name)
 
     # Setup trainer
     trainer = Trainer(
@@ -508,6 +515,7 @@ def my_app(cfg: DictConfig) -> None:
         devices=cfg.num_gpus,
         precision=cfg.precision,
         max_epochs=cfg.epochs,
+        enable_checkpointing=not cfg.validate_only,
         logger=loggers,
         val_check_interval=1.0,
         log_every_n_steps=10,
@@ -520,6 +528,10 @@ def my_app(cfg: DictConfig) -> None:
     gc.collect()
     torch.cuda.empty_cache()
     gc.collect()
+
+    if cfg.validate_only:
+        trainer.validate(model, dataloaders=val_loader, ckpt_path=resume_checkpoint)
+        return
 
     # Start training
     trainer.fit(model, loader, val_loader, ckpt_path=resume_checkpoint)

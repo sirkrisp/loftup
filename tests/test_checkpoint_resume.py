@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from hydra import compose, initialize_config_dir
 
@@ -62,6 +64,28 @@ class CheckpointResumeTests(unittest.TestCase):
                 self.assertIsNone(compose(config_name=stage, overrides=['resume_from=null']).resume_from)
                 self.assertEqual(compose(config_name=stage,
                     overrides=['resume_from=/tmp/model.ckpt']).resume_from, '/tmp/model.ckpt')
+
+    def test_hf_auto_selects_latest_upload_with_pinned_revision(self):
+        prefix = 'stage1/experiment'
+        entries = [SimpleNamespace(path=f'{prefix}/run/old_9000.ckpt', last_commit=SimpleNamespace(date=1)),
+                   SimpleNamespace(path=f'{prefix}/run/new_5000.ckpt', last_commit=SimpleNamespace(date=2)),
+                   SimpleNamespace(path=f'{prefix}/notes.txt'),
+                   SimpleNamespace(path='stage1/other/new.ckpt')]
+        with patch('huggingface_hub.HfApi') as factory, \
+                patch('huggingface_hub.hf_hub_download', return_value='/cache/checkpoint.ckpt') as download:
+            factory.return_value.repo_info.return_value.sha = 'snapshot'
+            factory.return_value.list_repo_tree.return_value = entries
+            result = resolve_resume_checkpoint('auto', self.final, source='hf', repo_id='owner/repo', prefix=prefix)
+            self.assertEqual(result, '/cache/checkpoint.ckpt')
+            download.assert_called_once_with('owner/repo', f'{prefix}/run/new_5000.ckpt',
+                                             repo_type='model', revision='snapshot')
+            self.assertEqual(factory.return_value.list_repo_tree.call_args.kwargs['revision'], 'snapshot')
+
+    def test_hf_missing_checkpoint_fails_instead_of_starting_fresh(self):
+        with patch('huggingface_hub.HfApi') as factory:
+            factory.return_value.list_repo_tree.return_value = []
+            with self.assertRaises(FileNotFoundError):
+                resolve_resume_checkpoint('auto', self.final, source='hf', repo_id='owner/repo', prefix='stage1/run')
 
 
 if __name__ == '__main__':

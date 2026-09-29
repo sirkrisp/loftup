@@ -4,7 +4,7 @@ No shard cache or shell commands. Default training selects a fixed global image
 pool without repeats; legacy hash-split cycling remains available explicitly.
 """
 
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 import glob
 import hashlib
 import io
@@ -78,11 +78,83 @@ def resolve_shards(source, endpoint=None):
     return shards
 
 
+class ResumableS3Stream:
+    """Keep tar parsing intact across body failures using conditional range GETs."""
+
+    def __init__(self, url, endpoint=None):
+        self.url = str(url)
+        parsed = urlparse(self.url)
+        self.client = s3_client(endpoint)
+        self.request = dict(Bucket=parsed.netloc, Key=parsed.path.lstrip("/"))
+        self.body = None
+        self.offset = 0  # Bytes delivered to tarfile, excluding failed reads.
+        self.length = None
+        self.etag = None
+        self.attempts = 0
+
+    def _open(self):
+        request = dict(self.request)
+        if self.etag is not None:
+            request["IfMatch"] = self.etag
+        if self.offset:
+            request["Range"] = f"bytes={self.offset}-"
+        response = self.client.get_object(**request)
+        body = response["Body"]
+        try:
+            if self.length is None:
+                self.length, self.etag = response["ContentLength"], response["ETag"]
+            else:
+                if response["ETag"] != self.etag or response["ContentLength"] != self.length - self.offset:
+                    raise ValueError(f"S3 shard changed while streaming: {self.url}")
+                if self.offset and response.get("ContentRange") != f"bytes {self.offset}-{self.length - 1}/{self.length}":
+                    raise ValueError(f"S3 server returned an incorrect byte range: {self.url}")
+        except Exception:
+            body.close()
+            raise
+        self.body = body
+
+    def read(self, size=-1):
+        from botocore.exceptions import (
+            ConnectionClosedError, IncompleteReadError, ReadTimeoutError,
+            ResponseStreamingError,
+        )
+
+        if size == 0 or self.offset == self.length:
+            return b""
+        while True:
+            try:
+                if self.body is None:
+                    self._open()
+                data = self.body.read(None if size is None or size < 0 else size)
+                if not data and self.offset < self.length:
+                    raise IncompleteReadError(actual_bytes=self.offset, expected_bytes=self.length)
+                self.offset += len(data)
+                return data
+            except (ConnectionClosedError, IncompleteReadError, ReadTimeoutError,
+                    ResponseStreamingError) as error:
+                self.close()
+                if self.attempts == 20:
+                    error.add_note(f"S3 shard {self.url} failed after 20 retries at byte {self.offset}")
+                    raise
+                delay = min(2 ** self.attempts, 30)
+                self.attempts += 1
+                logging.getLogger(__name__).warning(
+                    "Interrupted S3 shard %s (%s); retry %d/20 in %ds from byte %d",
+                    self.url, type(error).__name__, self.attempts, delay, self.offset,
+                )
+                time.sleep(delay)
+
+    def close(self):
+        if self.body is not None:
+            self.body.close()
+            self.body = None
+
+
 @contextmanager
 def open_shard(url, endpoint=None):
     parsed = urlparse(str(url))
     if parsed.scheme == "s3":
-        stream = s3_client(endpoint).get_object(Bucket=parsed.netloc, Key=parsed.path.lstrip("/"))["Body"]
+        stream = ResumableS3Stream(url, endpoint)
     elif parsed.scheme in ("http", "https"):
         stream = urlopen(str(url), timeout=120)
     elif not parsed.scheme:
@@ -91,51 +163,14 @@ def open_shard(url, endpoint=None):
         raise ValueError(f"Unsupported shard scheme: {parsed.scheme}")
     try:
         yield stream
+    except Exception as error:
+        error.add_note(f"While reading shard {url}")
+        raise
     finally:
         stream.close()
 
 
 def iter_encoded_samples(shard, endpoint=None):
-    """Retry interrupted S3 shards without yielding any sample twice.
-
-    Prepared shards are immutable. Replay from the start after a body-read
-    failure, discarding already yielded pairs so worker strides stay stable.
-    The SDK's request retries do not cover failures while consuming the body.
-    """
-    if urlparse(str(shard)).scheme != "s3":
-        yield from _iter_encoded_samples(shard, endpoint)
-        return
-
-    from botocore.exceptions import (
-        ConnectionClosedError, IncompleteReadError, ReadTimeoutError,
-        ResponseStreamingError,
-    )
-
-    yielded = 0
-    retries = 20
-    for attempt in range(retries + 1):
-        try:
-            with closing(_iter_encoded_samples(shard, endpoint)) as samples:
-                for index, sample in enumerate(samples):
-                    if index < yielded:
-                        continue
-                    yielded += 1
-                    yield sample
-            return
-        except (ConnectionClosedError, IncompleteReadError, ReadTimeoutError,
-                ResponseStreamingError) as error:
-            if attempt == retries:
-                error.add_note(f"S3 shard {shard} failed after {retries} retries; {yielded} samples yielded")
-                raise
-            delay = min(2 ** attempt, 30)
-            logging.getLogger(__name__).warning(
-                "Interrupted S3 shard %s (%s); retry %d/%d in %ds, replaying %d samples",
-                shard, type(error).__name__, attempt + 1, retries, delay, yielded,
-            )
-            time.sleep(delay)
-
-
-def _iter_encoded_samples(shard, endpoint=None):
     """Read adjacent JPG/JSON pairs; malformed samples fail rather than disappear."""
     with open_shard(shard, endpoint) as stream, tarfile.open(fileobj=stream, mode="r|*") as archive:
         key, sample = None, {}
@@ -190,9 +225,22 @@ def sample_split(key, val_fraction=0.05, seed=42):
     return "val" if value / 2**64 < val_fraction else "train"
 
 
-def training_sample(sample, transform, target_transform, max_masks):
+def training_sample(sample, transform, target_transform, max_masks, include_masks=True):
+    try:
+        return _training_sample(sample, transform, target_transform, max_masks, include_masks)
+    except Exception as error:
+        error.add_note(f"While decoding {sample['__url__']}::{sample['__key__']}")
+        raise
+
+
+def _training_sample(sample, transform, target_transform, max_masks, include_masks):
     image, metadata = decode_sample(sample)
     img = transform(image) if transform else TF.to_tensor(image)
+    result = {"img": img, "__key__": sample["__key__"],
+              "img_path": f"{sample['__url__']}::{sample['__key__']}.jpg",
+              "label_path": f"{sample['__url__']}::{sample['__key__']}.json"}
+    if not include_masks:
+        return result
     height, width = img.shape[-2:]
     labels = torch.full((max_masks, height, width), -1.0)
     # Masks are stored at their original (pre-resize) resolution; decode against
@@ -206,9 +254,8 @@ def training_sample(sample, transform, target_transform, max_masks):
         if label.shape[-2:] != (height, width):
             raise ValueError("Image and mask transforms must produce matching dimensions")
         labels[index] = label.squeeze(0)
-    return {"img": img, "label": labels, "__key__": sample["__key__"],
-            "img_path": f"{sample['__url__']}::{sample['__key__']}.jpg",
-            "label_path": f"{sample['__url__']}::{sample['__key__']}.json"}
+    result["label"] = labels
+    return result
 
 
 def consumer_shards(shards, consumer, consumers):
@@ -236,7 +283,8 @@ def buffered_shuffle(samples, size, rng):
 class SA1BWebDataset(IterableDataset):
     def __init__(self, shards, split="train", transform=None, target_transform=None,
                  batch_size=2, batches_per_epoch=1000, max_masks=150,
-                 val_fraction=0.05, split_seed=42, shuffle_buffer=32, endpoint=None):
+                 val_fraction=0.05, split_seed=42, shuffle_buffer=32, endpoint=None,
+                 include_masks=True):
         super().__init__()
         if split not in {"train", "val"} or not 0 < val_fraction < 1:
             raise ValueError("Use split=train/val and 0 < val_fraction < 1")
@@ -247,6 +295,7 @@ class SA1BWebDataset(IterableDataset):
         self.batch_size, self.batches_per_epoch = batch_size, batches_per_epoch
         self.max_masks, self.val_fraction, self.split_seed = max_masks, val_fraction, split_seed
         self.shuffle_buffer, self.endpoint = shuffle_buffer, endpoint
+        self.include_masks = include_masks
         self.distributed_context = None
 
     def __len__(self):
@@ -283,7 +332,7 @@ class SA1BWebDataset(IterableDataset):
             before = produced
             try:
                 for sample in stream:
-                    yield training_sample(sample, self.transform, self.target_transform, self.max_masks)
+                    yield training_sample(sample, self.transform, self.target_transform, self.max_masks, self.include_masks)
                     produced += 1
                     if produced == quota:
                         return
@@ -355,7 +404,7 @@ class FiniteSA1BWebDataset(SA1BWebDataset):
             stream = buffered_shuffle(stream, self.shuffle_buffer, rng)
         try:
             for sample in stream:
-                yield training_sample(sample, self.transform, self.target_transform, self.max_masks)
+                yield training_sample(sample, self.transform, self.target_transform, self.max_masks, self.include_masks)
         finally:
             stream.close()
 
@@ -383,7 +432,7 @@ def make_webdataset_loaders(cfg, transform, target_transform):
         finite = dict(samples_per_shard=options.samples_per_shard, world_size=cfg.num_gpus)
         train = FiniteSA1BWebDataset(split="train", batch_size=cfg.batch_size,
             sample_start=0, sample_count=options.train_samples, **finite, **common)
-        val = FiniteSA1BWebDataset(split="val", batch_size=1,
+        val = FiniteSA1BWebDataset(split="val", batch_size=1, include_masks=False,
             sample_start=options.train_samples, sample_count=options.val_samples, **finite, **common)
         print(f"WebDataset: {len(shards)} shards; {options.train_samples:,} unique training images, "
               f"{options.val_samples:,} validation images; {len(train) // cfg.batch_size:,} batches/rank; "
@@ -391,10 +440,11 @@ def make_webdataset_loaders(cfg, transform, target_transform):
     else:
         train = SA1BWebDataset(split="train", batch_size=cfg.batch_size,
                               batches_per_epoch=options.train_batches, **common)
-        val = SA1BWebDataset(split="val", batch_size=1,
+        val = SA1BWebDataset(split="val", batch_size=1, include_masks=False,
                             batches_per_epoch=options.val_batches, **common)
     kwargs = dict(num_workers=cfg.num_workers, pin_memory=True)
     if cfg.num_workers:
         kwargs["prefetch_factor"] = options.get("prefetch_factor", 1)
+        kwargs["timeout"] = options.get("worker_timeout", 600)
     return (StreamingDataLoader(train, batch_size=cfg.batch_size, **kwargs),
             StreamingDataLoader(val, batch_size=1, **kwargs))

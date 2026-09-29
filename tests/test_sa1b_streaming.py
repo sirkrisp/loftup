@@ -52,22 +52,44 @@ class StreamingTests(unittest.TestCase):
         class Body(io.BytesIO):
             def read(self, size=-1):
                 if self.tell() >= fail_after:
+                    # A failed network read may consume bytes without returning them.
+                    super().read(127)
                     raise ResponseStreamingError(error=OSError('Connection broken'))
                 return super().read(min(size, 512))
 
         return Body(payload)
 
+    def s3_responses(self, bodies):
+        responses = iter(bodies)
+
+        def get_object(**kwargs):
+            body = next(responses)
+            offset = int(kwargs.get('Range', 'bytes=0-')[6:-1])
+            length = len(body.getvalue())
+            body.seek(offset)
+            response = dict(Body=body, ContentLength=length - offset, ETag='"original"')
+            if offset:
+                response['ContentRange'] = f'bytes {offset}-{length - 1}/{length}'
+            return response
+
+        return get_object
+
     def test_s3_body_retries_preserve_all_samples_and_close_streams(self):
         path = self.root / 'sa1b-000000.tar'
         expected = list(iter_encoded_samples(path))
-        # Fail inside members, including a second failure during replay.
+        # Fail inside members, including a failure immediately after reopening.
         bodies = [self.interrupted_body(25088), self.interrupted_body(12800),
                   io.BytesIO(path.read_bytes())]
         with patch('datasets.sa1b_webdataset.s3_client') as client, \
                 patch('datasets.sa1b_webdataset.time.sleep') as sleep, \
                 self.assertLogs('datasets.sa1b_webdataset', level='WARNING'):
-            client.return_value.get_object.side_effect = [{'Body': body} for body in bodies]
+            client.return_value.get_object.side_effect = self.s3_responses(bodies)
             actual = list(iter_encoded_samples('s3://bucket/data/one.tar'))
+            requests = client.return_value.get_object.call_args_list
+        self.assertNotIn('Range', requests[0].kwargs)
+        for request in requests[1:]:
+            self.assertEqual(request.kwargs['Range'], 'bytes=25088-')
+            self.assertEqual(request.kwargs['IfMatch'], '"original"')
         self.assertEqual([s['__key__'] for s in actual], [s['__key__'] for s in expected])
         self.assertEqual([(s['jpg'], s['json']) for s in actual],
                          [(s['jpg'], s['json']) for s in expected])
@@ -80,7 +102,7 @@ class StreamingTests(unittest.TestCase):
         with patch('datasets.sa1b_webdataset.s3_client') as client, \
                 patch('datasets.sa1b_webdataset.time.sleep') as sleep, \
                 self.assertLogs('datasets.sa1b_webdataset', level='WARNING'):
-            client.return_value.get_object.side_effect = [{'Body': body} for body in bodies]
+            client.return_value.get_object.side_effect = self.s3_responses(bodies)
             with self.assertRaises(ResponseStreamingError):
                 for sample in iter_encoded_samples('s3://bucket/data/one.tar'):
                     actual.append(sample['__key__'])
@@ -100,10 +122,53 @@ class StreamingTests(unittest.TestCase):
                 list(iter_encoded_samples('s3://bucket/data/one.tar'))
         sleep.assert_not_called()
 
+    def test_s3_resume_rejects_changed_objects_and_incorrect_ranges(self):
+        for field, value in [('ETag', '"changed"'), ('ContentRange', 'bytes 0-9/10'),
+                             ('ContentLength', 1)]:
+            with self.subTest(field=field):
+                bodies = [self.interrupted_body(25088),
+                          io.BytesIO((self.root / 'sa1b-000000.tar').read_bytes())]
+                get_object = self.s3_responses(bodies)
+
+                def response(**kwargs):
+                    result = get_object(**kwargs)
+                    if 'Range' in kwargs:
+                        result[field] = value
+                    return result
+
+                with patch('datasets.sa1b_webdataset.s3_client') as client, \
+                        patch('datasets.sa1b_webdataset.time.sleep') as sleep, \
+                        self.assertLogs('datasets.sa1b_webdataset', level='WARNING'):
+                    client.return_value.get_object.side_effect = response
+                    with self.assertRaises(ValueError):
+                        list(iter_encoded_samples('s3://bucket/data/one.tar'))
+                self.assertEqual(sleep.call_count, 1)
+                self.assertTrue(all(body.closed for body in bodies))
+
+    def test_s3_premature_eof_resumes_at_last_delivered_byte(self):
+        payload = (self.root / 'sa1b-000000.tar').read_bytes()
+        bodies = [io.BytesIO(payload[:25088]), io.BytesIO(payload)]
+        get_object = self.s3_responses(bodies)
+
+        def response(**kwargs):
+            result = get_object(**kwargs)
+            if 'Range' not in kwargs:
+                result['ContentLength'] = len(payload)
+            return result
+
+        with patch('datasets.sa1b_webdataset.s3_client') as client, \
+                patch('datasets.sa1b_webdataset.time.sleep'), \
+                self.assertLogs('datasets.sa1b_webdataset', level='WARNING'):
+            client.return_value.get_object.side_effect = response
+            actual = list(iter_encoded_samples('s3://bucket/data/one.tar'))
+            self.assertEqual(client.return_value.get_object.call_args.kwargs['Range'], 'bytes=25088-')
+        self.assertEqual([sample['__key__'] for sample in actual], [f'sa_{i}' for i in range(100)])
+        self.assertTrue(all(body.closed for body in bodies))
+
     def test_s3_early_close_closes_body(self):
         body = io.BytesIO((self.root / 'sa1b-000000.tar').read_bytes())
         with patch('datasets.sa1b_webdataset.s3_client') as client:
-            client.return_value.get_object.return_value = {'Body': body}
+            client.return_value.get_object.side_effect = self.s3_responses([body])
             samples = iter_encoded_samples('s3://bucket/data/one.tar')
             next(samples)
             samples.close()
@@ -177,7 +242,7 @@ class StreamingTests(unittest.TestCase):
         data = (self.root / 'sa1b-000000.tar').read_bytes()
         stream = io.BytesIO(data)
         with patch('datasets.sa1b_webdataset.s3_client') as client:
-            client.return_value.get_object.return_value = {'Body': stream}
+            client.return_value.get_object.side_effect = self.s3_responses([stream])
             samples = list(iter_encoded_samples('s3://bucket/data/one.tar', 'https://example.test'))
             client.return_value.get_object.assert_called_once_with(Bucket='bucket', Key='data/one.tar')
         self.assertTrue(stream.closed)
@@ -247,7 +312,32 @@ class StreamingTests(unittest.TestCase):
         train, val = create_training_loaders(cfg, T.ToTensor(), T.PILToTensor())
         self.assertEqual((len(train), len(val)), (2, 1))
         self.assertEqual(next(iter(train))['label'].shape, (2, 3, 8, 12))
-        self.assertEqual(next(iter(val))['img'].shape, (1, 3, 8, 12))
+        with patch('datasets.sa1b_webdataset.decode_masks', side_effect=AssertionError('validation decoded masks')):
+            validation = next(iter(val))
+        self.assertEqual(validation['img'].shape, (1, 3, 8, 12))
+        self.assertNotIn('label', validation)
+        self.assertEqual((train.timeout, val.timeout), (0, 0))
+        cfg.num_workers = 2
+        train, val = create_training_loaders(cfg, T.ToTensor(), T.PILToTensor())
+        self.assertEqual((train.timeout, val.timeout), (600, 600))
+        cfg.webdataset.worker_timeout = 120
+        train, val = create_training_loaders(cfg, T.ToTensor(), T.PILToTensor())
+        self.assertEqual((train.timeout, val.timeout), (120, 120))
+
+    def test_corrupt_sample_error_identifies_shard_and_key(self):
+        sample = {'__url__': 's3://bucket/bad.tar', '__key__': 'broken', 'jpg': b'bad', 'json': b'{}'}
+        with self.assertRaises(Exception) as raised:
+            training_sample(sample, None, None, 1, include_masks=False)
+        self.assertIn('s3://bucket/bad.tar::broken', ' '.join(raised.exception.__notes__))
+
+    def test_shard_checker_reads_all_images_and_detects_wrong_count(self):
+        import contextlib
+        from scripts.check_sa1b_shards import check_shard
+        with contextlib.redirect_stdout(io.StringIO()):
+            path = str(self.root / 'sa1b-000000.tar')
+            self.assertEqual(check_shard(path, expected_samples=100, check_masks=True), 100)
+            with self.assertRaisesRegex(ValueError, 'expected 101 samples, found 100'):
+                check_shard(path, expected_samples=101)
 
 
 if __name__ == '__main__':

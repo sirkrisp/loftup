@@ -190,12 +190,32 @@ batch-aligned worker/rank ranges prevent duplicate samples; boundary shards may
 be read by multiple consumers. Training shuffles shard ranges and uses a
 compressed 32-sample shuffle buffer. Tune `num_workers` for bandwidth/CPU/RAM;
 `webdataset.prefetch_factor=1` bounds decoded batch buffering, especially for
-896-pixel masks. There is no disk shard cache or mid-shard network resume;
-network errors stop training. Checkpoint resume does not restore the stream cursor.
+896-pixel masks. There is no disk shard cache. Interrupted S3 reads resume at the
+last delivered byte using conditional range requests, with up to 20 retries and
+backoff capped at 30 seconds. Object identity and response ranges are checked to
+prevent mixing shard versions or duplicating data. With workers enabled,
+`webdataset.worker_timeout=600` limits waits for worker output to 10 minutes so
+stalled input fails before the 30-minute DDP collective timeout; use `0` to disable.
+Checkpoint resume does not restore the stream cursor.
 
 Matching deterministic image/mask transforms produce `img: [B,3,H,W]` and
 `label: [B,150,H,W]`. Unused mask slots contain `-1`, overlaps are preserved, and
 `webdataset.max_masks` controls the cap.
+Validation reconstruction uses only images, so its loader skips mask decoding
+and label allocation. Decode errors include the shard URL and sample key.
+
+Check the default five validation shards (requires B2 read credentials):
+
+```bash
+uv run python -m scripts.check_sa1b_shards \
+  --endpoint https://s3.eu-central-003.backblazeb2.com \
+  s3://sa1b-webdataset/sa1b-896/sa1b-00100{0..4}.tar
+```
+
+This checks every JPEG/JSON pair, unique sample keys, and the 1,000-sample shard
+count; add `--check-masks` to decode all original-resolution masks too. It reports
+progress and stops on the first error without dropping samples. These shard
+names assume the default sorted shard set and one-million-image training pool.
 
 Periodic, epoch and final checkpoints upload automatically to private
 `Krispin/loftup` under stage/run-specific directories. Uploads are synchronous,

@@ -12,6 +12,19 @@ import torchvision.transforms.functional as TF
 
 from ema import EMA
 
+def load_stage1_training_weights(featurizer, upsampler, checkpoint_path):
+    """Initialize Stage 2 from a trusted full Stage 1 Lightning checkpoint.
+
+    Keep the student trainable and restore the already-wrapped featurizer,
+    including its ChannelNorm, without introducing a second normalization.
+    """
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    state = checkpoint["state_dict"]
+    for prefix, module in (("model.", featurizer), ("upsampler.", upsampler)):
+        weights = {key[len(prefix):]: value for key, value in state.items() if key.startswith(prefix)}
+        module.load_state_dict(weights, strict=True)
+
+
 def validation_reconstruction_loss(featurizer, upsampler, img, upsample_size):
     """Measure held-out feature reconstruction at the backbone's native grid."""
     low_res_img = F.interpolate(img, size=(224, 224), mode="bilinear", align_corners=False)

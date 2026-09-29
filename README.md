@@ -171,10 +171,30 @@ Both stages default to `resume_from=auto`: rerun the same training command to
 restore the most recently modified local checkpoint for that experiment under
 `output_root`. Selection includes periodic, epoch, and final checkpoints; if none
 exists, training starts fresh. This restores Lightning's training state, including
-optimizer and step counts. It does not download checkpoints from Hugging Face.
+optimizer and step counts. Stage 1 can instead download from Hugging Face with
+`resume_source=hf`, selecting the latest upload under that experiment's prefix
+in `hf.repo_id` and caching the download locally.
 Use `resume_from=null` to start fresh or `resume_from=/path/to/model.ckpt` to select
 a specific checkpoint. Keep the same experiment settings and `output_root` when
 resuming so automatic selection searches the same checkpoint location.
+
+Evaluate the latest Stage 1 checkpoint from HF without training or checkpoint uploads:
+
+```bash
+uv run python train_loftup_stage1.py gpu=2x5090 resume_from=auto resume_source=hf validate_only=true wandb.enabled=true
+```
+
+Then resume normal Stage 1 training from that checkpoint to finish the configured epoch:
+
+```bash
+uv run python train_loftup_stage1.py gpu=2x5090 resume_from=auto resume_source=hf wandb.enabled=true
+```
+
+HF resume fails if the repository cannot be read or no matching checkpoint
+exists. Authenticate with `hf auth login` or `HF_TOKEN`. With a global batch of
+8, the one-million-image epoch ends at step 125,000, leaving approximately 5,000
+optimizer steps from the 120k checkpoint. The streaming dataset's exact sample
+cursor is not restored, so resumed batches can repeat images.
 
 Validation logs `val/reconstruction_mse`, a feature reconstruction diagnostic.
 The old flat-file loader remains available with `dataset=sa1b`; its split settings
@@ -247,6 +267,20 @@ You can still override individual settings without `++`, for example
 ### Stage 2: High-Resolution Supervision
 
 Stage 2 training (`train_loftup_stage2.py`) fine-tunes the Stage 1 upsampler with high-resolution supervision for improved quality.
+
+To start Stage 2 on two GPUs from a downloaded Stage 1 Lightning checkpoint:
+
+```bash
+uv run python train_loftup_stage2.py num_gpus=2 batch_size=1 num_workers=2 \
+  pretrained_upsampler=/path/to/stage1_120000.ckpt wandb.enabled=true resume_from=null
+```
+
+Stage 2 uses `num_gpus` directly, not the Stage 1 hardware presets. Start with
+one image per GPU because it loads 896-pixel images and masks. The pretrained
+checkpoint initializes the featurizer and trainable student; a frozen copy of
+the Stage 1 upsampler supplies crop supervision from the first training step.
+Use `resume_from=auto` on subsequent Stage 2 restarts to restore Stage 2's own
+optimizer and progress. Validation loads images without allocating SAM masks.
 
 **Example training command:**
 ```bash

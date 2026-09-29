@@ -6,6 +6,8 @@ defaults:
 # Environment Args
 output_root: 'output_dir'
 resume_from: auto # Latest local checkpoint for this experiment; null starts fresh.
+resume_source: local # Use hf to download the latest checkpoint from hf.repo_id.
+validate_only: false # Evaluate the selected checkpoint without training or saving.
 pytorch_data_dir: 'datasets'
 
 # Dataset args
@@ -30,6 +32,7 @@ webdataset:
   max_masks: 150
   shuffle_buffer: 32
   prefetch_factor: 1 # Bounds memory occupied by decoded SAM masks.
+  worker_timeout: 600 # Fail stalled workers before the 30-minute DDP timeout.
 
 hf:
   enabled: true

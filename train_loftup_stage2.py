@@ -8,6 +8,7 @@ This script trains upsamplers with high-resolution supervision using a pretraine
 """
 
 import gc
+from copy import deepcopy
 import os
 import random
 from os.path import join
@@ -25,7 +26,7 @@ from vis import create_logging
 from pytorch_lightning.strategies import DDPStrategy
 from torchvision.transforms import InterpolationMode
 
-from upsamplers import get_upsampler, load_upsampler_weights, norm, unnorm
+from upsamplers import get_upsampler, norm, unnorm
 from datasets.loaders import create_training_loaders
 from checkpoint_upload import configure_checkpoint_upload
 from checkpoint_resume import resolve_resume_checkpoint
@@ -37,6 +38,7 @@ from utils import (
     mask_feature_similarity_loss,
 )
 from training_utils import (
+    load_stage1_training_weights,
     validation_reconstruction_loss,
     ScaleNet,
     AttentionDownsampler,
@@ -144,7 +146,7 @@ class LoftUpStage2(pl.LightningModule):
 
         # Initialize upsampler
         self.upsampler = get_upsampler(
-            upsampler, self.dim, n_freqs=self.n_freqs, cfg=cfg
+            upsampler, self.dim, lr_size=self.final_size, n_freqs=self.n_freqs, cfg=cfg
         )
 
         # Initialize downsampler
@@ -168,9 +170,10 @@ class LoftUpStage2(pl.LightningModule):
         # Initialize EMA for upsampler (hardcoded to always be active)
         if self.pretrained_upsampler is not None:
             # Load pretrained weights
-            self.upsampler = load_upsampler_weights(
-                self.upsampler, self.pretrained_upsampler
-            )
+            load_stage1_training_weights(self.model, self.upsampler, self.pretrained_upsampler)
+            # The Stage 1 teacher stays fixed while the Stage 2 student learns.
+            self.crop_upsampler = deepcopy(self.upsampler).requires_grad_(False).eval()
+            self.ema_update_after = 0
             self.ema_upsampler = None
             print(
                 f"Using pretrained upsampler weights. Upsampler type: {upsampler}. No EMA."
@@ -285,6 +288,7 @@ class LoftUpStage2(pl.LightningModule):
                     cropped_feats = self.model(cropped_img)
 
                     if self.use_crop_upsampler:
+                        self.crop_upsampler.eval()
                         cropped_feats = self.crop_upsampler(cropped_feats, cropped_img)
 
                         # Ensure cropped features match image size
@@ -433,7 +437,7 @@ class LoftUpStage2(pl.LightningModule):
         self.manual_backward(full_total_loss)
 
         # Update EMA
-        if hasattr(self, "crop_upsampler"):
+        if isinstance(getattr(self, "crop_upsampler", None), EMA):
             self.crop_upsampler.update()
 
         # Logging
@@ -449,7 +453,7 @@ class LoftUpStage2(pl.LightningModule):
                 f"Step {self.global_step}: Total loss: {full_total_loss}, Rec loss: {full_rec_loss}, HR loss: {full_hr_loss}"
             )
 
-        if self.global_step % 5000 == 0:
+        if self.global_step > 0 and self.global_step % 5000 == 0:
             self.trainer.save_checkpoint(
                 self.chkpt_dir[:-5] + f"_{self.global_step}.ckpt"
             )
@@ -491,7 +495,7 @@ class LoftUpStage2(pl.LightningModule):
     def optimizer_step(self, *args, **kwargs):
         """Custom optimizer step to update EMA."""
         super().optimizer_step(*args, **kwargs)
-        if hasattr(self, "crop_upsampler"):
+        if isinstance(getattr(self, "crop_upsampler", None), EMA):
             self.crop_upsampler.update()  # Update the EMA upsampler
 
     def on_save_checkpoint(self, checkpoint):
