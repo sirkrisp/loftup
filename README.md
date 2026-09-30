@@ -286,10 +286,16 @@ Stage 2 supports the shared GPU presets. `gpu=2x5090` selects two GPUs, batch
 size 2 per GPU, and 2 accumulation steps (effective global batch 8). Add
 `batch_size=1` if the 896-pixel workload exceeds available memory. Without a
 preset, Stage 2 retains four GPUs, batch size 2, and no accumulation. The pretrained
-checkpoint initializes the featurizer and trainable student; a frozen copy of
-the Stage 1 upsampler supplies crop supervision from the first training step.
+checkpoint initializes the featurizer and trainable student. Following the
+[upstream Stage 2 fix](https://github.com/andrehuang/loftup/commit/0751a9b3cf7d5d4d1be181abc6f44fe3f43c77d8),
+an EMA teacher starts from the same upsampler weights and supplies crop supervision
+from the first training step (`beta=0.99`, `update_after_step=0`, `update_every=10`).
+EMA advances once per optimizer step, after gradient accumulation, using the
+bundled EMA implementation's initialization and decay warmup.
 Use `resume_from=auto` on subsequent Stage 2 restarts to restore Stage 2's own
 optimizer and progress. Validation loads images without allocating SAM masks.
+Older Stage 2 checkpoints from the fixed-teacher implementation have a different
+state layout; start EMA training from Stage 1 with `resume_from=null`.
 Stage 2 saves and uploads periodic checkpoints every 1,000 optimizer steps;
 override `checkpoint_every_n_steps` to change this interval.
 Stage 2 also evaluates the configured validation set every 1,000 optimizer

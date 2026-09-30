@@ -8,7 +8,6 @@ This script trains upsamplers with high-resolution supervision using a pretraine
 """
 
 import gc
-from copy import deepcopy
 import os
 import random
 from os.path import join
@@ -172,36 +171,24 @@ class LoftUpStage2(pl.LightningModule):
         # Initialize loss functions
         self.tv = TVLoss()
 
-        # Initialize EMA for upsampler (hardcoded to always be active)
+        # Initialize both student and EMA teacher from Stage 1 when available.
         if self.pretrained_upsampler is not None:
-            # Load pretrained weights
             load_stage1_training_weights(self.model, self.upsampler, self.pretrained_upsampler)
-            # The Stage 1 teacher stays fixed while the Stage 2 student learns.
-            self.crop_upsampler = deepcopy(self.upsampler).requires_grad_(False).eval()
             self.ema_update_after = 0
-            self.ema_upsampler = None
             print(
-                f"Using pretrained upsampler weights. Upsampler type: {upsampler}. No EMA."
+                f"Using pretrained upsampler weights. Upsampler type: {upsampler}. "
+                "EMA teacher initialized from them."
             )
+        elif self.use_crop_upsampler:
+            self.ema_update_after = 0
         else:
-            # Use EMA for upsampler training
-            if self.use_crop_upsampler:
-                self.ema_update_after = 0
-                self.crop_upsampler = EMA(
-                    self.upsampler,
-                    beta=0.99,
-                    update_after_step=self.ema_update_after,
-                    update_every=10,
-                )
-            else:
-                # When there is no pretrained upsampler, we can still use EMA for the upsampler
-                self.ema_update_after = 1000
-                self.crop_upsampler = EMA(
-                    self.upsampler,
-                    beta=0.99,
-                    update_after_step=self.ema_update_after,
-                    update_every=10,
-                )
+            self.ema_update_after = 1000
+        self.crop_upsampler = EMA(
+            self.upsampler,
+            beta=0.99,
+            update_after_step=self.ema_update_after,
+            update_every=10,
+        )
 
         self.accumulation_steps = int(cfg.get("accumulation_steps", 1)) if cfg is not None else 1
         if self.accumulation_steps < 1:
@@ -592,7 +579,7 @@ def my_app(cfg: DictConfig) -> None:
         hr_res=cfg.hr_res,
         hr_weight=cfg.hr_weight,
         consistency_method=cfg.consistency_method,
-        pretrained_upsampler=cfg.pretrained_upsampler,
+        pretrained_upsampler=cfg.pretrained_upsampler if ifpretrained else None,
         affinity_loss=cfg.affinity_loss,
         rec_weight=cfg.rec_weight,
         l1_affinity=cfg.l1_affinity,
