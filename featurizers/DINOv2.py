@@ -451,15 +451,27 @@ class DINOv2Featurizer(nn.Module):
         else:
             raise NotImplementedError(f"Unknown architecture {arch}")
 
+    def _patch_aligned_image(self, img):
+        height, width = img.shape[-2:]
+        height = height // self.patch_size * self.patch_size
+        width = width // self.patch_size * self.patch_size
+        if height == 0 or width == 0:
+            raise ValueError(f"DINOv2 inputs must be at least {self.patch_size} pixels on each axis")
+        # Jitter can produce partial edge patches. Drop them, as the stride-14
+        # convolution and reconstruction downsampler do, without rescaling pixels.
+        return img[..., :height, :width]
+
     def get_cls_token(self, img):
-        return self.model.forward(img)
+        return self.model.forward(self._patch_aligned_image(img))
 
     def forward(self, img, n=1, include_cls=False):
+        img = self._patch_aligned_image(img)
         h = img.shape[2] // self.patch_size
         w = img.shape[3] // self.patch_size
         return self.model.forward_features(img)["x_norm_patchtokens"].reshape(-1, h, w, self.dim).permute(0, 3, 1, 2)
     
     def forward_all_layers(self, img):
+        img = self._patch_aligned_image(img)
         num_layers = len(self.model.blocks)
         features = self.model.get_intermediate_layers(img, n=num_layers, norm=True, reshape=True)
         lr_feats = features[-1]
@@ -468,6 +480,7 @@ class DINOv2Featurizer(nn.Module):
         
     
     def forward_all_layer_list(self, img):
+        img = self._patch_aligned_image(img)
         num_layers = len(self.model.blocks)
         features = self.model.get_intermediate_layers(img, n=num_layers, norm=True, reshape=True) # We will normalize the features later
         return list(features)
